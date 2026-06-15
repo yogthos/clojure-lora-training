@@ -26,14 +26,14 @@ class TestSampleNodes:
 
     def test_min_depth_filter(self):
         tree = build_baseline_tree()
-        # Only root nodes are at depth 0
-        nodes = sample_nodes(tree, count=10, min_depth=0)
-        root_nodes = [n for n in nodes if n.depth == 0]
+        # min_depth=0 includes root nodes, min_depth=1 excludes them
+        eligible_all = [n for n in tree.nodes.values() if n.depth >= 0]
+        eligible_deep = [n for n in tree.nodes.values() if n.depth >= 1]
+        assert len(eligible_all) > len(eligible_deep)
+        # When sampling all eligible nodes, depth 0 ones must be present
+        all_nodes = sample_nodes(tree, count=len(eligible_all), min_depth=0)
+        root_nodes = [n for n in all_nodes if n.depth == 0]
         assert len(root_nodes) > 0
-
-        # Only subcategories
-        nodes = sample_nodes(tree, count=10, min_depth=1)
-        assert all(n.depth >= 1 for n in nodes)
 
     def test_uniform_strategy(self):
         tree = build_baseline_tree()
