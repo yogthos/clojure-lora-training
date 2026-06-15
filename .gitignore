@@ -1,0 +1,74 @@
+# Virtual Environment
+venv/
+env/
+ENV/
+.venv/
+
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Distribution / packaging
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.coverage
+
+# OS
+.DS_Store
+Thumbs.db
+.clj-kondo/
+.gitattributes
+.lsp/
+checkpoints/
+config.json
+input/
+output/
+.cursor/
+atlas_cache/
+lora_adapters/
+models/
+
+# Agent instruction files (local-only)
+CLAUDE.md
+AGENTS.md
+.claude/
+.wolf/
+
+# Logs
+logs/*.md
+!logs/.gitkeep
+data/training/howard_russell/LlamaFactory/train.jsonl
+data/blended/howard_russell_corpus_full.json
+data/blended/howard_russell_forward.json
+data/blended/howard_russell_reverse.json
+data/blended/howard_russell_short.json
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key

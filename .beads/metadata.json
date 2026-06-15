@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "clojure_lora_trainer",
+  "project_id": "c98efd20-9492-4ea5-8956-f9fe63c12ae7"
+}
