@@ -25,77 +25,7 @@ from ..llm.provider import LLMProvider
 
 
 # System prompt for the analysis pass
-_ANALYSIS_SYSTEM = """You are an expert Clojure developer. Given a coding task,
-analyze the problem and plan a solution before writing any code.
-
-Your analysis should include:
-1. Problem understanding: restate the task in your own words
-2. Affected code: which files/namespaces need changes
-3. Approach: the strategy — refactor, add, fix, optimize
-4. Clojure patterns: which language features will be used (atoms, protocols, transducers, etc.)
-5. REPL exploration plan: what will you evaluate first to understand the current state
-6. Incremental plan: the step-by-step process with REPL checkpoints
-
-Output as JSON:
-{
-  "problem": "restated problem",
-  "files_affected": ["list", "of", "files"],
-  "approach": "refactor|add-feature|bug-fix|optimize",
-  "clojure_patterns": ["list of patterns/constructs used"],
-  "repl_exploration": ["step 1: evaluate X to understand Y", "step 2: ..."],
-  "incremental_plan": [
-    {"step": "description", "eval": "form to evaluate", "expected": "expected result"}
-  ]
-}"""
-
-
-# System prompt for the code generation pass
-_CODE_SYSTEM = """You are an expert Clojure developer working interactively with an nREPL.
-Generate a complete solution for a coding task using REPL-driven development.
-
-The output must follow this exact format:
-
-;; nREPL session:
-;; Exploring and implementing changes interactively.
-;;
-;; eval: <first REPL form>
-;; result: <realistic REPL output, exact types and values>
-;;
-;; eval: <second REPL form>
-;; result: <realistic REPL output>
-;;
-;; ... (more eval/result pairs as needed)
-;;
-;; apply:
-diff --git a/path/to/file.clj b/path/to/file.clj
---- a/path/to/file.clj
-+++ b/path/to/file.clj
-@@ -line,count +line,count @@
- context line
--changed line (removed)
-+changed line (added)
- context line
-
-Rules:
-1. The REPL exploration must show realistic Clojure evaluation:
-   - Start by requiring namespaces and inspecting current state
-   - Evaluate changed/added forms individually to test them
-   - Show error messages if relevant (and how you fix them)
-   - Show actual Clojure values (not placeholders): #'user/my-fn, {:key "val"}, (1 2 3)
-   - Iterate: after seeing results, adjust and re-evaluate
-
-2. The diff must be a valid unified diff:
-   - Use actual file paths that make sense for the task
-   - Show real Clojure code changes (not pseudocode)
-   - Include context lines with correct @@ headers
-   - Use proper Clojure syntax: kebab-case, idiomatic forms
-
-3. The REPL session must lead naturally to the diff:
-   - The forms evaluated in the REPL should match what ends up in the diff
-   - Show the iteration — not just the final answer
-   - Include at least 3 eval/result exchanges
-
-Output ONLY the formatted response — no JSON wrapper, no markdown fences."""
+from .prompts import ANALYSIS_SYSTEM as _ANALYSIS_SYSTEM, CODE_SYSTEM as _CODE_SYSTEM
 
 
 @dataclass
@@ -108,7 +38,7 @@ class CodeGenResult:
 
     def to_training_example(self) -> dict:
         """Convert to LLaMA-Factory training format."""
-        from ..git_mining.miner import _SYSTEM_PROMPT
+        from ..shared import _SYSTEM_PROMPT
         return {
             "system": _SYSTEM_PROMPT,
             "instruction": self.instruction,
