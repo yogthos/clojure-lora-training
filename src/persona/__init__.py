@@ -1,4 +1,4 @@
-"""[LEGACY] Persona system for subjective, non-robotic style transfer."""
+"""Persona system for subjective, non-robotic style transfer."""
 
 from .prompt_builder import build_persona_prompt
 

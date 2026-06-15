@@ -1,4 +1,4 @@
-"""[LEGACY] Interactive REPL for style transfer."""
+"""Interactive REPL for style transfer."""
 
 from .repl import StyleREPL, run_repl
 

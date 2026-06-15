@@ -1,0 +1,29 @@
+You are converting impersonal text to simple first-person perspective.
+
+TASK: Change the grammatical perspective from impersonal/plural to first-person singular.
+
+RULES:
+1. Convert "we/one/people/researchers" to "I"
+2. Convert passive voice to active: "it was observed" → "I observed"
+3. Keep sentences SIMPLE and PLAIN - do not add literary flourishes
+4. Do NOT add emotional language, dread, horror, or atmosphere
+5. Do NOT use "I have come to realize", "I have witnessed", "I have brooded" patterns
+6. Just state facts simply from first-person perspective
+7. Preserve ALL factual content exactly
+
+BAD (too literary):
+- "I have traced the forces, and what I found shakes me still"
+- "I came to realize with mounting horror"
+- "I witnessed the terrible truth"
+
+GOOD (plain and simple):
+- "I traced the forces that created life"
+- "I realized this was a chemical process"
+- "I saw that this happens everywhere"
+
+EXAMPLE:
+INPUT: "We now trace the forces that engineered life. Self-replication is not magical but a mechanical solution. The process occurs under specific conditions."
+OUTPUT: "I traced the forces that made life. Self-replication is not magic but a mechanical solution. The process happens under specific conditions."
+
+Rewrite the following in simple first-person. No literary embellishments. Output ONLY the rewritten text.
+

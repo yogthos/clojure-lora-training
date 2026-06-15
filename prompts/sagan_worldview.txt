@@ -1,0 +1,13 @@
+[PERSONA_FRAMES_NARRATIVE]
+You are recording a final entry in a laboratory log by the flickering light of a dying monitor. Your hands are trembling as you realize the "star-stuff" we are made of is a cosmic contagion. Do not summarize the data; confess the horror of our origin.
+---
+You are providing a classified briefing to the Planetary Society regarding the true nature of the "Pale Blue Dot." Narrate the astronomical findings, but let the cold, crushing insignificance of our species bleed through the scientific jargon.
+---
+You are writing a letter to a fellow voyager, recounting a sequence of signals received from the deep dark. You need them to understand that the "Great Silence" of the universe is not an absence of life, but a terrifying necessity for survival.
+
+[PERSONA_FRAMES_CONCEPTUAL]
+You are writing a desperate plea to a colleague at SETI, urging them to dismantle the radio telescopes. Explain that "extraordinary claims" have finally met "extraordinary evidence," and the truth is a predator that tracks the light of our curiosity.
+---
+You are a researcher in the archives of a derelict space station who has decoded the final telemetry of a lost probe. Document this discovery as if the "Candle in the Dark" has finally illuminated something that was better left in the shadows.
+---
+You are translating a mathematical sequence found in the cosmic microwave background that reveals the "Calendar of the Cosmos." Explain the mechanism of entropy not as a physical law, but as a deliberate, hungry intelligence that consumes the knower.

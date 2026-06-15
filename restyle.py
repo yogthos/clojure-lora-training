@@ -1,0 +1,825 @@
+#!/usr/bin/env python3
+"""Style transfer using LoRA-adapted models.
+
+Uses pre-trained LoRA adapters for fast, consistent style transfer with
+a critic/repair loop to ensure content preservation and grammatical correctness.
+
+Usage:
+    # Basic usage
+    python restyle.py input.md -o output.md \\
+        --adapter lora_adapters/sagan \\
+        --author "Carl Sagan"
+
+    # With verbose output
+    python restyle.py input.md -o output.md \\
+        --adapter lora_adapters/sagan \\
+        --author "Carl Sagan" \\
+        --verbose
+
+    # List available adapters
+    python restyle.py --list-adapters
+
+To train a LoRA adapter for a new author:
+    # 1. Curate corpus
+    python scripts/curate_corpus.py --input corpus.txt --output curated.txt
+
+    # 2. Index in ChromaDB
+    python scripts/load_corpus.py --input curated.txt --author "Author"
+
+    # 3. Generate training data
+    python scripts/generate_flat_training.py --corpus curated.txt \\
+        --author "Author" --output data/training/author
+
+    # 4. Create config.yaml (see docs/architecture.md for template)
+    # 5. Train with mlx_lm.lora --config data/training/author/config.yaml
+"""
+
+import os
+
+# Suppress warnings and progress bars (must be set before importing transformers)
+from src.config import setup_environment
+setup_environment()
+
+import argparse
+import json
+import sys
+import time
+from pathlib import Path
+
+from src.utils.logging import setup_logging
+
+# Add project root to path
+project_root = Path(__file__).parent
+sys.path.insert(0, str(project_root))
+
+
+def index_corpus(corpus_path: str, author: str, clear: bool = False) -> None:
+    """Index an author's corpus for RAG retrieval.
+
+    Args:
+        corpus_path: Path to corpus text file.
+        author: Author name.
+        clear: Whether to clear existing chunks for this author.
+    """
+    try:
+        from src.rag import CorpusIndexer, get_indexer
+    except ImportError:
+        print("Error: RAG dependencies not installed.")
+        print("Install with: pip install chromadb sentence-transformers")
+        sys.exit(1)
+
+    indexer = get_indexer()
+
+    print(f"Indexing corpus: {corpus_path}")
+    print(f"Author: {author}")
+
+    if clear:
+        print("Clearing existing chunks...")
+
+    try:
+        count = indexer.index_corpus(corpus_path, author, clear_existing=clear)
+        print(f"\nIndexed {count} chunks for {author}")
+        print(f"RAG index location: data/rag_index/")
+    except FileNotFoundError:
+        print(f"Error: Corpus file not found: {corpus_path}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"Error indexing corpus: {e}")
+        sys.exit(1)
+
+
+def run_repl_mode(
+    adapter_path: str | None,
+    author: str,
+    config_path: str = "config.json",
+    temperature: float = 0.4,
+    perspective: str | None = None,
+    verify: bool = True,
+    fused_models: list | None = None,
+) -> None:
+    """Run interactive REPL mode.
+
+    Args:
+        adapter_path: Path to LoRA adapter (or None when using a fused model).
+        author: Author name.
+        config_path: Path to config file.
+        temperature: Generation temperature.
+        perspective: Output perspective.
+        verify: Whether to verify entailment.
+        fused_models: List of fused model paths (used instead of adapter).
+    """
+    from src.repl import run_repl
+    from src.config import load_config
+    from src.llm.deepseek import DeepSeekProvider
+
+    # Load config for critic provider
+    try:
+        app_config = load_config(config_path)
+    except FileNotFoundError:
+        app_config = None
+
+    # Create critic provider
+    critic_provider = None
+    if app_config and app_config.llm.providers.get("deepseek"):
+        deepseek_config = app_config.llm.get_provider_config("deepseek")
+        critic_provider = DeepSeekProvider(config=deepseek_config)
+    else:
+        import os
+        from src.config import LLMProviderConfig
+
+        api_key = os.environ.get("DEEPSEEK_API_KEY", "")
+        if api_key:
+            deepseek_config = LLMProviderConfig(
+                api_key=api_key,
+                model="deepseek-chat",
+                base_url="https://api.deepseek.com",
+            )
+            critic_provider = DeepSeekProvider(config=deepseek_config)
+
+    # Run REPL
+    run_repl(
+        adapter_path=adapter_path,
+        author=author,
+        config_path=config_path,
+        temperature=temperature,
+        perspective=perspective or "preserve",
+        verify=verify,
+        critic_provider=critic_provider,
+        fused_models=fused_models,
+    )
+
+
+def list_rag_authors() -> None:
+    """List authors indexed in RAG."""
+    try:
+        from src.rag import get_indexer
+    except ImportError:
+        print("RAG dependencies not installed.")
+        print("Install with: pip install chromadb sentence-transformers")
+        return
+
+    indexer = get_indexer()
+    authors = indexer.get_authors()
+
+    if not authors:
+        print("\nNo authors indexed yet.")
+        print("\nTo index an author's corpus:")
+        print("  python restyle.py index-corpus corpus.txt --author 'Author Name'")
+        return
+
+    print("\nIndexed authors in RAG:")
+    print("-" * 40)
+    for author in authors:
+        count = indexer.get_chunk_count(author)
+        print(f"  {author}: {count} chunks")
+    print()
+
+
+def list_adapters(adapters_dir: str = "lora_adapters") -> None:
+    """List available LoRA adapters."""
+    adapters_path = Path(adapters_dir)
+
+    if not adapters_path.exists():
+        print(f"No adapters directory found at: {adapters_path}")
+        print("\nTo train an adapter, see the training workflow in README.md or run:")
+        print(
+            "  1. python scripts/curate_corpus.py --input corpus.txt --output curated.txt"
+        )
+        print(
+            "  2. python scripts/load_corpus.py --input curated.txt --author 'Author Name'"
+        )
+        print("  3. python scripts/generate_flat_training.py --corpus curated.txt \\")
+        print("         --author 'Author Name' --output data/training/author")
+        print("  4. mlx_lm.lora --config data/training/author/config.yaml")
+        return
+
+    # Load config to check enabled status
+    config_adapters = {}
+    try:
+        from src.config import load_config
+
+        config = load_config()
+        config_adapters = config.generation.lora_adapters
+    except Exception:
+        pass
+
+    adapters = []
+    for item in adapters_path.iterdir():
+        if item.is_dir():
+            metadata_path = item / "metadata.json"
+            if metadata_path.exists():
+                with open(metadata_path, "r") as f:
+                    metadata = json.load(f)
+
+                # Check enabled status from config
+                adapter_path = str(item)
+                enabled = True  # Default to enabled if not in config
+                if adapter_path in config_adapters:
+                    enabled = config_adapters[adapter_path].enabled
+
+                adapters.append(
+                    {
+                        "path": adapter_path,
+                        "author": metadata.get("author", "Unknown"),
+                        "base_model": metadata.get("base_model", "Unknown"),
+                        "rank": metadata.get("lora_rank", 16),
+                        "examples": metadata.get("training_examples", 0),
+                        "enabled": enabled,
+                    }
+                )
+
+    if not adapters:
+        print(f"No adapters found in: {adapters_path}")
+        return
+
+    print(f"\nAvailable LoRA adapters in {adapters_path}:\n")
+    print(f"{'Status':<10} {'Author':<25} {'Path':<30} {'Rank':<6} {'Examples'}")
+    print("-" * 85)
+
+    for adapter in adapters:
+        status = "[ON]" if adapter["enabled"] else "[OFF]"
+        print(
+            f"{status:<10} "
+            f"{adapter['author']:<25} "
+            f"{Path(adapter['path']).name:<30} "
+            f"{adapter['rank']:<6} "
+            f"{adapter['examples']}"
+        )
+
+    print()
+
+
+def transfer_file(
+    input_path: str,
+    output_path: str,
+    adapters: list,
+    author: str,
+    config_path: str = "config.json",
+    temperature: float | None = None,
+    perspective: str | None = None,
+    verify: bool = True,
+    verbose: bool = False,
+    expand: bool = False,
+    no_expand: bool = False,
+    fused_models: list | None = None,
+) -> None:
+    """Transfer a file using LoRA adapter(s) or fused model(s).
+
+    Args:
+        input_path: Path to input file.
+        output_path: Path to output file.
+        adapters: List of AdapterSpec objects specifying adapters and their scales.
+        author: Author name.
+        config_path: Path to config file.
+        temperature: Generation temperature.
+        perspective: Output perspective (None uses config default).
+        verify: Whether to verify entailment.
+        verbose: Whether to print verbose output.
+        expand: Enable texture expansion (CLI flag).
+        no_expand: Disable texture expansion (CLI flag).
+        fused_models: List of fused model paths to use directly (no adapter).
+    """
+    fused_models = fused_models or []
+    from src.generation.transfer import StyleTransfer, TransferConfig
+    from src.generation.lora_generator import AdapterSpec
+    from src.config import load_config
+    from src.llm.deepseek import DeepSeekProvider
+
+    # Load config
+    try:
+        app_config = load_config(config_path)
+    except FileNotFoundError:
+        print(f"Warning: Config file not found at {config_path}, using defaults")
+        app_config = None
+
+    # Load input
+    print(f"Loading: {input_path}")
+    with open(input_path, "r") as f:
+        input_text = f.read()
+
+    word_count = len(input_text.split())
+    print(f"Input: {word_count} words")
+
+    # Configure transfer from app config or defaults
+    # Determine perspective: CLI overrides config
+    effective_perspective = perspective
+    if effective_perspective is None and app_config:
+        effective_perspective = app_config.style.perspective
+    if effective_perspective is None:
+        effective_perspective = "preserve"
+
+    # Determine expand_for_texture: CLI overrides config
+    # --expand enables, --no-expand disables, otherwise use config
+    expand_for_texture_explicit = False
+    if expand:
+        expand_for_texture = True
+        expand_for_texture_explicit = True
+    elif no_expand:
+        expand_for_texture = False
+        expand_for_texture_explicit = True
+    elif app_config:
+        expand_for_texture = app_config.generation.expand_for_texture
+    else:
+        expand_for_texture = False
+
+    if app_config:
+        gen = app_config.generation
+        config = TransferConfig(
+            temperature=temperature,
+            verify_semantic_fidelity=verify,
+            perspective=effective_perspective,
+            max_expansion_ratio=gen.max_expansion_ratio,
+            target_expansion_ratio=gen.target_expansion_ratio,
+            expand_for_texture=expand_for_texture,
+            expand_for_texture_explicit=expand_for_texture_explicit,
+            skip_neutralization=gen.skip_neutralization,
+            pass_headings_unchanged=gen.pass_headings_unchanged,
+            min_paragraph_words=gen.min_paragraph_words,
+            use_structural_rag=gen.use_structural_rag,
+            use_structural_grafting=gen.use_structural_grafting,
+            rag_sample_size=gen.rag_sample_size,
+            apply_input_perturbation=gen.apply_input_perturbation,
+            use_persona=gen.use_persona,
+        )
+    else:
+        config = TransferConfig(
+            temperature=temperature,
+            verify_semantic_fidelity=verify,
+            perspective=effective_perspective,
+            use_structural_rag=True,
+            expand_for_texture=expand_for_texture,
+            expand_for_texture_explicit=expand_for_texture_explicit,
+        )
+
+    # Create critic provider for repairs
+    if app_config and app_config.llm.providers.get("deepseek"):
+        deepseek_config = app_config.llm.get_provider_config("deepseek")
+        critic_provider = DeepSeekProvider(config=deepseek_config)
+        print(f"Using DeepSeek for critic/repair")
+    else:
+        # Try to get API key from environment
+        import os
+        from src.config import LLMProviderConfig
+
+        api_key = os.environ.get("DEEPSEEK_API_KEY", "")
+        if not api_key:
+            print("Warning: No DeepSeek API key found. Repairs will be disabled.")
+            print("Set DEEPSEEK_API_KEY or configure in config.json")
+            critic_provider = None
+        else:
+            deepseek_config = LLMProviderConfig(
+                api_key=api_key,
+                model="deepseek-chat",
+                base_url="https://api.deepseek.com",
+            )
+            critic_provider = DeepSeekProvider(config=deepseek_config)
+            print(f"Using DeepSeek for critic/repair (from env)")
+
+    # Create transfer pipeline
+    if fused_models:
+        if len(fused_models) == 1:
+            print(f"\nInitializing fused model: {fused_models[0]}")
+        else:
+            print(f"\nInitializing {len(fused_models)} fused models:")
+            for mp in fused_models:
+                print(f"  - {mp}")
+    elif len(adapters) == 1:
+        print(
+            f"\nInitializing LoRA adapter: {adapters[0].path} (scale={adapters[0].scale})"
+        )
+        if adapters[0].checkpoint:
+            print(f"Checkpoint: {adapters[0].checkpoint}")
+    else:
+        print(f"\nInitializing {len(adapters)} LoRA adapters:")
+        for adapter in adapters:
+            ckpt = f" checkpoint={adapter.checkpoint}" if adapter.checkpoint else ""
+            print(f"  - {adapter.path} (scale={adapter.scale}){ckpt}")
+    print(f"Author: {author}")
+
+    transfer = StyleTransfer(
+        adapter_path=None,
+        author_name=author,
+        critic_provider=critic_provider,
+        config=config,
+        adapters=adapters,
+        fused_models=fused_models,
+    )
+
+    # Set up output file for streaming
+    output_file = Path(output_path)
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+
+    # Track paragraphs for streaming output
+    output_paragraphs = []
+
+    # Progress callback
+    def on_progress(current: int, total: int, status: str):
+        if verbose:
+            print(f"  [{current}/{total}] {status}")
+        else:
+            # Simple progress bar
+            pct = int(current / total * 50)
+            bar = "=" * pct + "-" * (50 - pct)
+            print(f"\r  [{bar}] {current}/{total}", end="", flush=True)
+
+    # Paragraph callback - write to file as each paragraph completes
+    def on_paragraph(index: int, paragraph: str):
+        output_paragraphs.append(paragraph)
+        # Write all paragraphs so far to file (overwrite for clean state)
+        with open(output_file, "w") as f:
+            f.write("\n\n".join(output_paragraphs))
+        if verbose:
+            print(f"\n--- Paragraph {index + 1} written to {output_path} ---")
+
+    # Run transfer
+    print(f"\nTransferring... (streaming to {output_path})")
+    start_time = time.time()
+
+    try:
+        output_text, stats = transfer.transfer_document(
+            input_text,
+            on_progress=on_progress,
+            on_paragraph=on_paragraph,
+        )
+
+        if not verbose:
+            print()  # New line after progress bar
+
+        # Final save (ensures proper formatting)
+        with open(output_file, "w") as f:
+            f.write(output_text)
+
+        # Print stats
+        elapsed = time.time() - start_time
+        output_words = len(output_text.split())
+
+        print(f"\nComplete!")
+        print(f"  Output: {output_path}")
+        print(f"  Words: {word_count} -> {output_words}")
+        print(f"  Time: {elapsed:.1f}s ({stats.avg_time_per_paragraph:.1f}s/paragraph)")
+
+        if stats.entailment_scores:
+            avg_score = sum(stats.entailment_scores) / len(stats.entailment_scores)
+            print(f"  Content preservation: {avg_score:.1%}")
+
+    except KeyboardInterrupt:
+        print("\n\nInterrupted by user.")
+        # Get partial results
+        partial_text, partial_stats = transfer.get_partial_results()
+        elapsed = time.time() - start_time
+
+        if output_paragraphs:
+            # Save what we have
+            with open(output_file, "w") as f:
+                f.write("\n\n".join(output_paragraphs))
+            print(f"  Partial output saved: {output_path}")
+            print(f"  Paragraphs completed: {len(output_paragraphs)}")
+            print(f"  Time: {elapsed:.1f}s")
+        else:
+            print("  No paragraphs completed yet.")
+
+        sys.exit(130)  # Standard exit code for Ctrl+C
+
+
+def _build_argument_parser() -> argparse.ArgumentParser:
+    """Build the CLI argument parser. Extracted for testability."""
+    parser = argparse.ArgumentParser(
+        description="Fast style transfer using LoRA adapters",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__,
+    )
+
+    # Positional arguments
+    parser.add_argument(
+        "input",
+        nargs="?",
+        help="Input file path",
+    )
+
+    # Output
+    parser.add_argument(
+        "-o",
+        "--output",
+        help="Output file path",
+    )
+
+    # Adapter settings
+    parser.add_argument(
+        "--model",
+        action="append",
+        metavar="PATH",
+        dest="model",
+        help="Path to a fused model directory to use directly (no adapter needed). "
+        "Can be specified multiple times. Overrides --adapter.",
+    )
+    parser.add_argument(
+        "--adapter",
+        action="append",
+        dest="adapters",
+        metavar="PATH[:SCALE]",
+        help="Path to LoRA adapter directory with optional scale (e.g., 'lora_adapters/sagan:0.5'). "
+        "Can be specified multiple times to blend styles. Scale defaults to --lora-scale or 1.0.",
+    )
+    parser.add_argument(
+        "--author",
+        help="Author name (optional if adapter has metadata)",
+    )
+
+    # Generation settings
+    parser.add_argument(
+        "--temperature",
+        type=float,
+        default=None,
+        help="Generation temperature (overrides config.json lora.temperature)",
+    )
+    parser.add_argument(
+        "--perspective",
+        choices=[
+            "preserve",
+            "first_person_singular",
+            "first_person_plural",
+            "third_person",
+            "author_voice_third_person",
+        ],
+        default=None,
+        help="Output perspective: preserve (default), first_person_singular, "
+        "first_person_plural, third_person, or author_voice_third_person "
+        "(writes AS author using third person)",
+    )
+    parser.add_argument(
+        "--no-verify",
+        action="store_true",
+        help="Disable entailment verification",
+    )
+    parser.add_argument(
+        "--expand",
+        action="store_true",
+        help="Enable texture expansion (add atmospheric details, flourishes)",
+    )
+    parser.add_argument(
+        "--no-expand",
+        action="store_true",
+        help="Disable texture expansion (overrides config.json)",
+    )
+    parser.add_argument(
+        "--lora-scale",
+        type=float,
+        default=None,
+        help="LoRA influence scale (0.0=base only, 0.5=balanced, 1.0=full). "
+        "Overrides config setting.",
+    )
+    parser.add_argument(
+        "--checkpoint",
+        type=str,
+        default=None,
+        help="Specific checkpoint file to use (e.g., '0000600_adapters.safetensors'). "
+        "Uses final adapter if not specified.",
+    )
+
+    # Utility options
+    parser.add_argument(
+        "--list-adapters",
+        action="store_true",
+        help="List available LoRA adapters",
+    )
+    parser.add_argument(
+        "--list-rag",
+        action="store_true",
+        help="List authors indexed in RAG",
+    )
+    parser.add_argument(
+        "--adapters-dir",
+        default="lora_adapters",
+        help="Directory containing adapters (default: lora_adapters)",
+    )
+
+    # Index corpus subcommand (handled as special input)
+    parser.add_argument(
+        "--index-corpus",
+        metavar="CORPUS_FILE",
+        help="Index a corpus file for RAG (requires --author)",
+    )
+    parser.add_argument(
+        "--clear-rag",
+        action="store_true",
+        help="Clear existing RAG chunks for author when indexing",
+    )
+
+    # Config
+    parser.add_argument(
+        "-c",
+        "--config",
+        default="config.json",
+        help="Path to config file (default: config.json)",
+    )
+
+    # Output options
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Verbose output",
+    )
+
+    # REPL mode
+    parser.add_argument(
+        "--repl",
+        action="store_true",
+        help="Start interactive REPL mode for live style transfer",
+    )
+
+    return parser
+
+
+def _resolve_transfer_targets(args):
+    """Resolve adapters and fused models from CLI args, falling back to config.
+
+    Priority:
+    1. ``--model`` CLI flag → fused models
+    2. ``--adapter`` CLI flag → LoRA adapters
+    3. ``config.json``: ``use_adapter=false`` picks enabled entries from
+       ``generation.models``; ``use_adapter=true`` picks from
+       ``generation.lora_adapters``.
+
+    Returns:
+        Tuple ``(adapters, fused_models, fused_model_config)`` where
+        ``fused_model_config`` is the first enabled fused-model's config
+        (for author fallback), or ``None``.
+    """
+    from src.generation.lora_generator import AdapterSpec
+
+    adapters: list = []
+    fused_models: list = []
+    fused_model_config = None
+
+    if args.model:
+        fused_models = list(args.model)
+        return adapters, fused_models, fused_model_config
+
+    if args.adapters:
+        default_scale = args.lora_scale if args.lora_scale is not None else 1.0
+        for spec_str in args.adapters:
+            adapter = AdapterSpec.parse(spec_str)
+            if ":" not in spec_str:
+                adapter.scale = default_scale
+            if len(adapters) == 0 and args.checkpoint:
+                adapter.checkpoint = args.checkpoint
+            adapters.append(adapter)
+        return adapters, fused_models, fused_model_config
+
+    # Fall back to config file
+    from src.config import load_config
+
+    try:
+        app_config = load_config(args.config)
+        gen = app_config.generation
+
+        if not gen.use_adapter:
+            for path, model_cfg in gen.models.items():
+                if not model_cfg.enabled:
+                    continue
+                fused_models.append(path)
+                if fused_model_config is None:
+                    fused_model_config = model_cfg
+            if fused_models:
+                print(f"Using fused models from config: {args.config}")
+        else:
+            for path, adapter_cfg in gen.lora_adapters.items():
+                if not adapter_cfg.enabled:
+                    continue
+                adapters.append(
+                    AdapterSpec(
+                        path=path,
+                        scale=adapter_cfg.scale,
+                        checkpoint=adapter_cfg.checkpoint,
+                    )
+                )
+            if adapters:
+                print(f"Using adapters from config: {args.config}")
+    except (FileNotFoundError, AttributeError):
+        pass
+
+    return adapters, fused_models, fused_model_config
+
+
+def main():
+    parser = _build_argument_parser()
+    args = parser.parse_args()
+
+    # Setup logging - use config.log_level as default, -v overrides to INFO
+    try:
+        from src.config import load_config
+
+        app_config = load_config()
+        default_level = app_config.log_level
+    except Exception:
+        default_level = "WARNING"
+
+    log_level = "INFO" if args.verbose else default_level
+    setup_logging(level=log_level)
+
+    # List adapters mode
+    if args.list_adapters:
+        list_adapters(args.adapters_dir)
+        return
+
+    # List RAG authors mode
+    if args.list_rag:
+        list_rag_authors()
+        return
+
+    # Index corpus mode
+    if args.index_corpus:
+        if not args.author:
+            parser.error("--author is required for --index-corpus")
+        index_corpus(args.index_corpus, args.author, args.clear_rag)
+        return
+
+    # REPL mode
+    if args.repl:
+        adapters, fused_models, fused_model_config = _resolve_transfer_targets(args)
+
+        if not adapters and not fused_models:
+            parser.error(
+                "REPL mode needs --model, --adapter, or lora_adapters/models "
+                "configured in config.json"
+            )
+
+        # Load author: CLI > adapter metadata > fused-model config
+        author = args.author
+        if not author and adapters:
+            metadata_path = Path(adapters[0].path) / "metadata.json"
+            if metadata_path.exists():
+                with open(metadata_path, "r") as f:
+                    metadata = json.load(f)
+                author = metadata.get("author")
+        if not author and fused_model_config and fused_model_config.author:
+            author = fused_model_config.author
+
+        if not author:
+            parser.error("--author is required")
+
+        run_repl_mode(
+            adapter_path=adapters[0].path if adapters else None,
+            fused_models=fused_models or None,
+            author=author,
+            config_path=args.config,
+            temperature=args.temperature,
+            perspective=args.perspective,
+            verify=not args.no_verify,
+        )
+        return
+
+    # Validate required arguments for transfer
+    if not args.input:
+        parser.error("Input file is required (or use --list-adapters, --list-rag)")
+
+    if not args.output:
+        # Default output name
+        input_path = Path(args.input)
+        args.output = str(input_path.with_suffix(".styled" + input_path.suffix))
+
+    adapters, fused_models, fused_model_config = _resolve_transfer_targets(args)
+
+    if not adapters and not fused_models:
+        parser.error(
+            "--model or --adapter is required (or configure lora_adapters/models in config.json)"
+        )
+
+    # Load author from metadata if not provided
+    author = args.author
+    if not author and adapters:
+        metadata_path = Path(adapters[0].path) / "metadata.json"
+        if metadata_path.exists():
+            with open(metadata_path, "r") as f:
+                metadata = json.load(f)
+            author = metadata.get("author")
+    if not author and fused_model_config and fused_model_config.author:
+        author = fused_model_config.author
+
+    if not author:
+        parser.error("--author is required")
+
+    # Run transfer
+    transfer_file(
+        input_path=args.input,
+        output_path=args.output,
+        adapters=adapters,
+        fused_models=fused_models,
+        author=author,
+        config_path=args.config,
+        temperature=args.temperature,
+        perspective=args.perspective,
+        verify=not args.no_verify,
+        verbose=args.verbose,
+        expand=args.expand,
+        no_expand=args.no_expand,
+    )
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\n\nInterrupted.")
+        sys.exit(130)

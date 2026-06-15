@@ -1,0 +1,557 @@
+"""NLP utilities using spaCy and NLTK."""
+
+import re
+from typing import List, Tuple
+
+from .logging import get_logger
+
+logger = get_logger(__name__)
+
+def _load_spacy_nlp():
+    """Load the spaCy model, preferring the large one with word vectors.
+    Called once per Services container (cached on `Services._nlp`).
+
+    Raises:
+        RuntimeError: If spaCy is not installed.
+    """
+    try:
+        import spacy
+        # Prefer large model with word vectors, fall back to smaller models
+        models = ["en_core_web_lg", "en_core_web_md", "en_core_web_sm"]
+        for model_name in models:
+            try:
+                nlp = spacy.load(model_name)
+                logger.info(f"Loaded spaCy model: {model_name}")
+                return nlp
+            except OSError:
+                continue
+        # No model found, download and use large model
+        logger.info("Downloading spaCy model en_core_web_lg...")
+        from spacy.cli import download
+        download("en_core_web_lg")
+        nlp = spacy.load("en_core_web_lg")
+        logger.info("Downloaded and loaded spaCy model: en_core_web_lg")
+        return nlp
+    except ImportError:
+        raise RuntimeError("spaCy is required. Install with: pip install spacy")
+
+
+def get_nlp():
+    """Return the shared spaCy model from the default Services container.
+
+    Raises:
+        RuntimeError: If spaCy model cannot be loaded.
+    """
+    from ..services import get_default_services
+    return get_default_services().nlp
+
+
+def split_into_sentences(text: str) -> List[str]:
+    """Split text into sentences using spaCy.
+
+    Preserves citations like [^1] and handles edge cases.
+
+    Args:
+        text: Input text.
+
+    Returns:
+        List of sentence strings.
+    """
+    if not text or not text.strip():
+        return []
+
+    nlp = get_nlp()
+    doc = nlp(text)
+
+    sentences = []
+    for sent in doc.sents:
+        sent_text = sent.text.strip()
+        if sent_text:
+            sentences.append(sent_text)
+
+    return sentences
+
+
+def is_sentence_incomplete(text: str) -> Tuple[bool, str]:
+    """Check if a sentence is incomplete using spaCy POS analysis.
+
+    Uses linguistic analysis rather than word lists:
+    - Checks if sentence ends with a function word (DET, ADP, CCONJ, SCONJ, AUX)
+    - Checks for missing main verb
+    - Checks for proper ending punctuation
+
+    Args:
+        text: Sentence text to check.
+
+    Returns:
+        Tuple of (is_incomplete, reason).
+    """
+    if not text or not text.strip():
+        return False, ""
+
+    text = text.strip()
+    nlp = get_nlp()
+    doc = nlp(text)
+
+    # Get non-space tokens
+    tokens = [t for t in doc if not t.is_space and not t.is_punct]
+    if not tokens:
+        return False, ""
+
+    # Check for em-dash at end (continuation cut off)
+    if text.endswith("—") or text.endswith("-"):
+        return True, "ends with dash"
+
+    # Get last meaningful token (skip trailing punctuation)
+    last_token = tokens[-1] if tokens else None
+    if not last_token:
+        return False, ""
+
+    # POS tags that indicate incomplete sentence ending
+    # DET = determiner (the, a, an)
+    # ADP = adposition/preposition (in, of, to)
+    # CCONJ = coordinating conjunction (and, or, but)
+    # SCONJ = subordinating conjunction (because, although, that)
+    # AUX = auxiliary verb (was, were, have, had, being)
+    # PART = particle (to in "to go")
+    incomplete_pos_tags = {"DET", "ADP", "CCONJ", "SCONJ", "AUX", "PART"}
+
+    if last_token.pos_ in incomplete_pos_tags:
+        return True, f"ends with {last_token.pos_} '{last_token.text}'"
+
+    # Check if it's a verb that typically requires an object
+    # (transitive verbs without objects suggest incomplete thought)
+    if last_token.pos_ == "VERB":
+        # Check if this verb typically needs a complement
+        # Look at dependency - if verb has no object children, may be incomplete
+        has_object = any(child.dep_ in ("dobj", "pobj", "attr", "ccomp", "xcomp")
+                        for child in last_token.children)
+        if not has_object and last_token.dep_ == "ROOT":
+            # Transitive verbs that commonly need objects
+            if last_token.tag_ in ("VBD", "VBN", "VBG"):  # Past/participle forms
+                return True, f"ends with verb '{last_token.text}' possibly missing object"
+
+    # Check for missing main verb (fragments)
+    if len(tokens) >= 4:
+        has_verb = any(t.pos_ in ("VERB", "AUX") for t in tokens)
+        if not has_verb:
+            return True, "no main verb"
+
+    # Check for proper ending punctuation
+    last_char = text[-1] if text else ""
+    if last_char not in ".!?;:\"'""''":
+        if len(tokens) > 3:  # Not just a heading
+            return True, "no ending punctuation"
+
+    return False, ""
+
+
+def find_incomplete_sentences(text: str) -> List[str]:
+    """Find sentences that appear to be incomplete or cut off.
+
+    Detects sentences that:
+    - End with a dash (em-dash continuation)
+    - End with a function word (determiner, preposition, conjunction)
+    - Are missing a main verb
+    - End without proper punctuation
+
+    Uses spaCy POS tagging rather than word lists.
+
+    Args:
+        text: Input text to check.
+
+    Returns:
+        List of incomplete sentence fragments.
+    """
+    incomplete = []
+    nlp = get_nlp()
+    doc = nlp(text)
+
+    for sent in doc.sents:
+        sent_text = sent.text.strip()
+        if not sent_text:
+            continue
+
+        is_incomplete, reason = is_sentence_incomplete(sent_text)
+        if is_incomplete:
+            incomplete.append(sent_text)
+            logger.debug(f"Incomplete sentence ({reason}): {sent_text[:50]}...")
+
+    return incomplete
+
+
+def get_complete_sentences(text: str) -> List[str]:
+    """Get only complete sentences from text, filtering out incomplete ones.
+
+    Args:
+        text: Input text.
+
+    Returns:
+        List of complete sentence strings.
+    """
+    complete = []
+    nlp = get_nlp()
+    doc = nlp(text)
+
+    for sent in doc.sents:
+        sent_text = sent.text.strip()
+        if not sent_text:
+            continue
+
+        is_incomplete, _ = is_sentence_incomplete(sent_text)
+        if not is_incomplete:
+            complete.append(sent_text)
+
+    return complete
+
+
+def split_into_paragraphs(text: str) -> List[str]:
+    """Split text into paragraphs.
+
+    Args:
+        text: Input text.
+
+    Returns:
+        List of paragraph strings (non-empty).
+    """
+    if not text or not text.strip():
+        return []
+
+    # Try double newlines first
+    paragraphs = [p.strip() for p in text.split('\n\n') if p.strip()]
+
+    # If no double newlines, try single newlines
+    if len(paragraphs) == 1 and '\n' in text:
+        paragraphs = [p.strip() for p in text.split('\n') if p.strip()]
+
+    return paragraphs
+
+
+def extract_citations(text: str) -> List[Tuple[str, int]]:
+    """Extract citations from text.
+
+    Args:
+        text: Input text.
+
+    Returns:
+        List of (citation, position) tuples.
+    """
+    pattern = r'\[\^\d+\]'
+    citations = []
+    for match in re.finditer(pattern, text):
+        citations.append((match.group(), match.start()))
+    return citations
+
+
+def remove_citations(text: str) -> str:
+    """Remove citations from text.
+
+    Args:
+        text: Input text.
+
+    Returns:
+        Text with citations removed.
+    """
+    return re.sub(r'\[\^\d+\]', '', text)
+
+
+def extract_entities(text: str) -> List[Tuple[str, str]]:
+    """Extract named entities from text.
+
+    Args:
+        text: Input text.
+
+    Returns:
+        List of (entity_text, entity_label) tuples.
+    """
+    nlp = get_nlp()
+    doc = nlp(text)
+    return [(ent.text, ent.label_) for ent in doc.ents]
+
+
+def extract_keywords(text: str, top_n: int = 10) -> List[str]:
+    """Extract keywords (nouns and verbs) from text.
+
+    Args:
+        text: Input text.
+        top_n: Maximum number of keywords to return.
+
+    Returns:
+        List of lemmatized keywords.
+    """
+    nlp = get_nlp()
+    doc = nlp(text)
+
+    # Extract nouns and verbs, lemmatize them
+    keywords = []
+    for token in doc:
+        if token.pos_ in ("NOUN", "VERB", "PROPN") and not token.is_stop:
+            lemma = token.lemma_.lower()
+            if lemma not in keywords and len(lemma) > 2:
+                keywords.append(lemma)
+
+    return keywords[:top_n]
+
+
+def count_words(text: str) -> int:
+    """Count words in text.
+
+    Args:
+        text: Input text.
+
+    Returns:
+        Word count.
+    """
+    if not text:
+        return 0
+    return len(text.split())
+
+
+def calculate_burstiness(sentences: List[str]) -> float:
+    """Calculate burstiness (coefficient of variation of sentence lengths).
+
+    Args:
+        sentences: List of sentences.
+
+    Returns:
+        Burstiness value (0 = uniform, higher = more variable).
+    """
+    if len(sentences) < 2:
+        return 0.0
+
+    lengths = [count_words(s) for s in sentences]
+    mean_length = sum(lengths) / len(lengths)
+
+    if mean_length == 0:
+        return 0.0
+
+    variance = sum((l - mean_length) ** 2 for l in lengths) / len(lengths)
+    std_dev = variance ** 0.5
+
+    return std_dev / mean_length
+
+
+def get_pos_distribution(text: str) -> dict:
+    """Get POS tag distribution for text.
+
+    Args:
+        text: Input text.
+
+    Returns:
+        Dictionary of POS tag to count.
+    """
+    nlp = get_nlp()
+    doc = nlp(text)
+
+    distribution = {}
+    for token in doc:
+        pos = token.pos_
+        distribution[pos] = distribution.get(pos, 0) + 1
+
+    return distribution
+
+
+def get_dependency_depth(text: str) -> float:
+    """Get average dependency tree depth for sentences.
+
+    Higher values indicate more complex sentence structures.
+
+    Args:
+        text: Input text.
+
+    Returns:
+        Average dependency depth.
+    """
+    nlp = get_nlp()
+    doc = nlp(text)
+
+    depths = []
+    for sent in doc.sents:
+        # Find max depth in this sentence
+        max_depth = 0
+        for token in sent:
+            depth = 0
+            current = token
+            while current.head != current:
+                depth += 1
+                current = current.head
+            max_depth = max(max_depth, depth)
+        depths.append(max_depth)
+
+    if not depths:
+        return 0.0
+
+    return sum(depths) / len(depths)
+
+
+def detect_perspective(text: str) -> str:
+    """Detect the perspective (first/third person) of text.
+
+    Args:
+        text: Input text.
+
+    Returns:
+        One of: "first_person_singular", "first_person_plural", "third_person"
+    """
+    text_lower = text.lower()
+
+    # Count first-person pronouns
+    first_singular = len(re.findall(r'\b(i|me|my|mine|myself)\b', text_lower))
+    first_plural = len(re.findall(r'\b(we|us|our|ours|ourselves)\b', text_lower))
+    third = len(re.findall(r'\b(he|she|it|they|him|her|them|his|hers|its|their)\b', text_lower))
+
+    if first_singular > first_plural and first_singular > third:
+        return "first_person_singular"
+    elif first_plural > first_singular and first_plural > third:
+        return "first_person_plural"
+    else:
+        return "third_person"
+
+
+def compute_semantic_similarity(text1: str, text2: str) -> float:
+    """Compute semantic similarity between two texts using spaCy word vectors.
+
+    Args:
+        text1: First text.
+        text2: Second text.
+
+    Returns:
+        Similarity score between 0 and 1.
+    """
+    nlp = get_nlp()
+    doc1 = nlp(text1)
+    doc2 = nlp(text2)
+
+    # If either doc has no vector, return 0
+    if not doc1.has_vector or not doc2.has_vector:
+        return 0.0
+
+    return doc1.similarity(doc2)
+
+
+def classify_by_similarity(
+    text: str,
+    prototypes: dict,
+    threshold: float = 0.3
+) -> Tuple[str, float]:
+    """Classify text by computing similarity against prototype phrases.
+
+    Uses spaCy word vectors to find the most similar prototype category.
+
+    Args:
+        text: Text to classify.
+        prototypes: Dict mapping category names to list of prototype phrases.
+        threshold: Minimum similarity to consider a match.
+
+    Returns:
+        Tuple of (best_category, similarity_score).
+    """
+    nlp = get_nlp()
+    doc = nlp(text)
+
+    if not doc.has_vector:
+        # Fall back to first category if no vectors available
+        return list(prototypes.keys())[0], 0.0
+
+    best_category = list(prototypes.keys())[0]  # Default
+    best_score = 0.0
+
+    for category, phrases in prototypes.items():
+        for phrase in phrases:
+            phrase_doc = nlp(phrase)
+            if phrase_doc.has_vector:
+                score = doc.similarity(phrase_doc)
+                if score > best_score:
+                    best_score = score
+                    best_category = category
+
+    # Only return match if above threshold
+    if best_score < threshold:
+        return list(prototypes.keys())[0], best_score
+
+    return best_category, best_score
+
+
+def is_heading(line: str) -> bool:
+    """Detect if a line is likely a heading.
+
+    Headings are identified by:
+    - Markdown heading markers (#, ##, etc.)
+    - All uppercase (or mostly uppercase)
+    - Title case: multiple capitalized words, no sentence-ending punctuation
+
+    Args:
+        line: A single line of text.
+
+    Returns:
+        True if the line appears to be a heading.
+    """
+    line = line.strip()
+
+    if not line:
+        return False
+
+    # Markdown headings
+    if line.startswith('#'):
+        return True
+
+    words = line.split()
+    word_count = len(words)
+
+    if word_count == 0:
+        return False
+
+    # Check for all caps (allowing numbers and punctuation)
+    alpha_chars = [c for c in line if c.isalpha()]
+    if alpha_chars:
+        upper_ratio = sum(1 for c in alpha_chars if c.isupper()) / len(alpha_chars)
+        # Line is mostly uppercase (>80%)
+        if upper_ratio > 0.8:
+            return True
+
+    # Lines ending with sentence punctuation are likely sentences, not headings
+    if line.endswith('.') or line.endswith('!'):
+        return False
+
+    # Single capitalized word (could be a section title)
+    if word_count == 1:
+        clean = words[0].strip('.,;:!?"\'()-—?')
+        if clean and clean[0].isupper():
+            return True
+
+    # Title case detection: count capitalized words after the first
+    # (first word is always capitalized in both sentences and headings)
+    if word_count >= 2:
+        # Skip common small words that stay lowercase in titles
+        small_words = {'a', 'an', 'the', 'and', 'or', 'but', 'in', 'on', 'at',
+                       'to', 'for', 'of', 'with', 'by', 'is', 'are', 'was', 'were'}
+
+        capitalized_count = 0
+        significant_words = 0
+
+        for word in words[1:]:  # Skip first word
+            clean_word = word.strip('.,;:!?"\'()-—?')
+            if not clean_word:
+                continue
+            # Skip small words and all-caps acronyms
+            if clean_word.lower() in small_words:
+                continue
+            if clean_word.isupper() and len(clean_word) <= 4:
+                continue  # Likely an acronym
+
+            significant_words += 1
+            if clean_word[0].isupper():
+                capitalized_count += 1
+
+        # If most significant words after the first are capitalized, it's title case
+        if significant_words >= 2 and capitalized_count / significant_words >= 0.5:
+            return True
+
+        # Short lines (<=6 words) with capitalized words after first
+        # Only if ALL significant words are capitalized (avoids "Tell me about Paris")
+        if word_count <= 6 and capitalized_count >= 1 and (
+            significant_words <= 1 or capitalized_count == significant_words
+        ):
+            return True
+
+    return False

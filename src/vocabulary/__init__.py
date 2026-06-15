@@ -1,4 +1,4 @@
-"""[LEGACY] Vocabulary control for style transfer.
+"""Vocabulary control for style transfer.
 
 The LoRA pipeline uses post-processing modules:
 - RepetitionReducer: Tracks word usage, replaces overused words with synonyms

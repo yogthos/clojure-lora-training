@@ -1,4 +1,4 @@
-"""[LEGACY] Validation modules for semantic preservation.
+"""Validation modules for semantic preservation.
 
 Core validation for the LoRA pipeline:
 - SemanticVerifier: Validates output preserves source meaning

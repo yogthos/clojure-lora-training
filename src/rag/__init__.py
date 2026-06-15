@@ -1,4 +1,4 @@
-"""[LEGACY] Structural RAG module for rhythm and syntax guidance.
+"""Structural RAG module for rhythm and syntax guidance.
 
 This module provides structural guidance for style transfer based on
 author corpus analysis, without few-shot content injection.

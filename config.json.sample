@@ -1,0 +1,96 @@
+{
+  "llm": {
+    "provider": {
+      "writer": "mlx",
+      "critic": "deepseek",
+      "rtt": "deepseek"
+    },
+    "providers": {
+      "deepseek": {
+        "api_key": "${DEEPSEEK_API_KEY}",
+        "base_url": "https://api.deepseek.com",
+        "model": "deepseek-chat",
+        "max_tokens": 4096,
+        "temperature": 0.7,
+        "timeout": 120
+      },
+      "mlx": {
+        "model": "mlx-community/Qwen3-8B-4bit",
+        "max_tokens": 512,
+        "temperature": 0.7,
+        "top_p": 0.9
+      },
+      "ollama": {
+        "base_url": "http://localhost:11434",
+        "model": "llama3",
+        "max_tokens": 4096,
+        "temperature": 0.7
+      }
+    },
+    "max_retries": 5,
+    "base_delay": 2,
+    "max_delay": 60
+  },
+  "generation": {
+    "max_expansion_ratio": 2.5,
+    "target_expansion_ratio": 1.5,
+    "expand_for_texture": false,
+    "use_adapter": true,
+    "lora_adapters": {
+      "/path/to/your-lora-adapter": {
+        "enabled": true,
+        "scale": 1.0,
+        "temperature": 0.6,
+        "top_p": 0.92,
+        "min_p": 0.05,
+        "repetition_penalty": 1.15,
+        "max_tokens": 512,
+        "checkpoint": "/path/to/your-lora-adapter/checkpoint",
+        "backend": "auto",
+        "device": "auto",
+        "load_in_4bit": true,
+        "load_in_8bit": false,
+        "worldview": "",
+        "fiction_markers": [],
+        "expand_for_texture": null,
+        "perspective": null,
+        "verify_entailment": null,
+        "merge_paragraphs": null,
+        "use_structural_rag": null,
+        "logit_bias": {}
+      }
+    },
+    "models": {
+      "/path/to/your-fused-model": {
+        "enabled": true,
+        "temperature": 0.6,
+        "top_p": 0.92,
+        "min_p": 0.05,
+        "repetition_penalty": 1.15,
+        "max_tokens": 512,
+        "author": "",
+        "worldview": "",
+        "fiction_markers": [],
+        "expand_for_texture": null,
+        "perspective": null,
+        "verify_entailment": null,
+        "merge_paragraphs": null,
+        "use_structural_rag": null,
+        "logit_bias": {}
+      }
+    },
+    "skip_neutralization": false,
+    "pass_headings_unchanged": true,
+    "min_paragraph_words": 10,
+    "use_structural_rag": true,
+    "use_structural_grafting": true,
+    "rag_sample_size": 300,
+    "use_persona": true,
+    "apply_input_perturbation": true
+  },
+  "style": {
+    "perspective": "preserve"
+  },
+  "log_level": "INFO",
+  "log_json": false
+}

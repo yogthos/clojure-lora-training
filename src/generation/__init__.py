@@ -1,4 +1,4 @@
-"""[LEGACY] Generation module for LoRA-based style transfer.
+"""Generation module for LoRA-based style transfer.
 
 The primary pipeline uses LoRA adapters for fast, consistent style transfer:
 - LoRAStyleGenerator: Core generation using MLX LoRA adapters

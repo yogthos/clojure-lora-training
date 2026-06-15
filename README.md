@@ -35,32 +35,63 @@ The trained model learns to develop Clojure code interactively via nREPL — eva
 - **`src/assembly/`** — Merges, deduplicates, balances, and formats the final dataset
 - **`src/synthetic/prompts/`** — Prompt templates as standalone `.txt` files (editable without touching Python)
 
-Legacy text-style-transfer modules (`generation/`, `vocabulary/`, `persona/`, `repl/`, `rag/`, `validation/`) are marked `[LEGACY]` and kept for reference.
+## Quick Start (uv)
 
-## Quick Start
+This project uses [uv](https://docs.astral.sh/uv/) for dependency management and task running.
 
 ```bash
-# Setup
-python3 -m venv venv && source venv/bin/activate
-pip install -e .
+# Install uv if you haven't already
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Clone and sync dependencies
+git clone <repo-url> && cd clojure-lora-trainer
+uv sync
+
+# Set up your config (edit values to match your setup)
+cp config.json.sample config.json
+
+# Set required environment variables
+export DEEPSEEK_API_KEY="your-api-key"
 
 # Mining: extract commit histories from Clojure repos
-python3 scripts/mine_clojure_repos.py \\
-    --repo /path/to/clojure-project \\
+uv run python3 scripts/mine_clojure_repos.py \
+    --repo /path/to/clojure-project \
     --output data/git-mining/output
 
 # Synthetic: generate training data from Clojure feature taxonomy
-python3 scripts/generate_synthetic_data.py \\
-    --features-file data/features/clojure_features.json \\
-    --output data/synthetic/output \\
+uv run python3 scripts/generate_synthetic_data.py \
+    --features-file data/features/clojure_features.json \
+    --output data/synthetic/output \
     --target 500
 
 # Assembly: merge, deduplicate, balance, format
-python3 scripts/assemble_codeflow_dataset.py \\
-    --git-dir data/git-mining/output \\
-    --synth-dir data/synthetic/output \\
+uv run python3 scripts/assemble_codeflow_dataset.py \
+    --git-dir data/git-mining/output \
+    --synth-dir data/synthetic/output \
     --output data/training/codeflow.jsonl
+
+# Run tests
+uv run python3 -m pytest
+
+# Run the style transfer REPL
+uv run python3 restyle.py
 ```
+
+### Running without uv
+
+If you prefer pip + venv:
+
+```bash
+python3 -m venv venv && source venv/bin/activate
+pip install -e .
+# Then use python3 and pytest directly (no uv prefix needed)
+```
+
+## Configuration
+
+Copy `config.json.sample` to `config.json` and edit it. The sample file documents all available options.
+
+Environment variables in config values use `${VAR}` syntax (e.g. `"api_key": "${DEEPSEEK_API_KEY}"`).
 
 ## Training Data Format
 

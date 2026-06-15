@@ -1,0 +1,510 @@
+"""Interactive REPL for style transfer.
+
+Provides a terminal UI similar to Claude Code for interactive style transfer.
+"""
+
+import sys
+import os
+import readline
+from typing import Optional
+from dataclasses import dataclass
+
+from ..generation.transfer import StyleTransfer, TransferConfig
+from ..utils.logging import get_logger
+
+logger = get_logger(__name__)
+
+# Configure readline for better input handling
+readline.parse_and_bind('set editing-mode emacs')
+readline.parse_and_bind('"\\e[A": previous-history')
+readline.parse_and_bind('"\\e[B": next-history')
+readline.parse_and_bind('"\\e[C": forward-char')
+readline.parse_and_bind('"\\e[D": backward-char')
+readline.parse_and_bind('"\\e[H": beginning-of-line')
+readline.parse_and_bind('"\\e[F": end-of-line')
+readline.parse_and_bind('"\\C-a": beginning-of-line')
+readline.parse_and_bind('"\\C-e": end-of-line')
+
+
+# ANSI color codes
+class Colors:
+    RESET = "\033[0m"
+    BOLD = "\033[1m"
+    DIM = "\033[2m"
+    ITALIC = "\033[3m"
+
+    # Foreground
+    BLACK = "\033[30m"
+    RED = "\033[31m"
+    GREEN = "\033[32m"
+    YELLOW = "\033[33m"
+    BLUE = "\033[34m"
+    MAGENTA = "\033[35m"
+    CYAN = "\033[36m"
+    WHITE = "\033[37m"
+
+    # Bright foreground
+    BRIGHT_BLACK = "\033[90m"
+    BRIGHT_RED = "\033[91m"
+    BRIGHT_GREEN = "\033[92m"
+    BRIGHT_YELLOW = "\033[93m"
+    BRIGHT_BLUE = "\033[94m"
+    BRIGHT_MAGENTA = "\033[95m"
+    BRIGHT_CYAN = "\033[96m"
+    BRIGHT_WHITE = "\033[97m"
+
+    # Background
+    BG_BLACK = "\033[40m"
+    BG_BLUE = "\033[44m"
+    BG_CYAN = "\033[46m"
+
+
+def supports_color() -> bool:
+    """Check if terminal supports colors."""
+    if os.environ.get("NO_COLOR"):
+        return False
+    if not hasattr(sys.stdout, "isatty"):
+        return False
+    if not sys.stdout.isatty():
+        return False
+    return True
+
+
+def get_terminal_width() -> int:
+    """Get terminal width, default to 80."""
+    try:
+        return os.get_terminal_size().columns
+    except OSError:
+        return 80
+
+
+@dataclass
+class REPLConfig:
+    """Configuration for the REPL."""
+    author: str
+    adapter_path: str
+    temperature: float = 0.4
+    verify: bool = True
+    perspective: str = "preserve"
+    use_color: bool = True
+
+
+class StyleREPL:
+    """Interactive REPL for style transfer."""
+
+    def __init__(
+        self,
+        transfer: StyleTransfer,
+        config: REPLConfig,
+    ):
+        """Initialize the REPL.
+
+        Args:
+            transfer: Initialized StyleTransfer instance.
+            config: REPL configuration.
+        """
+        self.transfer = transfer
+        self.config = config
+        self.use_color = config.use_color and supports_color()
+        self.history: list[tuple[str, list[str]]] = []  # (input, [variations]) pairs
+        self.input_history: list[str] = []  # For readline history
+        self.running = False
+        self._generation_cancelled = False
+
+    def _color(self, text: str, *codes: str) -> str:
+        """Apply color codes to text if colors are enabled."""
+        if not self.use_color:
+            return text
+        return "".join(codes) + text + Colors.RESET
+
+    def _print_header(self) -> None:
+        """Print the REPL header."""
+        width = get_terminal_width()
+
+        # Title
+        title = f" Style Transfer: {self.config.author} "
+        padding = (width - len(title)) // 2
+
+        print()
+        if self.use_color:
+            print(self._color("─" * width, Colors.DIM))
+            print(
+                self._color("─" * padding, Colors.DIM) +
+                self._color(title, Colors.BOLD, Colors.CYAN) +
+                self._color("─" * (width - padding - len(title)), Colors.DIM)
+            )
+            print(self._color("─" * width, Colors.DIM))
+        else:
+            print("─" * width)
+            print("─" * padding + title + "─" * (width - padding - len(title)))
+            print("─" * width)
+
+        # Instructions
+        print()
+        print(self._color("  Enter a paragraph to transform (press Enter to submit)", Colors.DIM))
+        print(self._color("  Generates 5 variations (Ctrl+C to cancel)", Colors.DIM))
+        print(self._color("  Commands: /help, /clear, /history, /quit", Colors.DIM))
+        print()
+
+    def _print_help(self) -> None:
+        """Print help information."""
+        print()
+        print(self._color("Commands:", Colors.BOLD))
+        print(f"  {self._color('/help', Colors.CYAN)}     Show this help message")
+        print(f"  {self._color('/clear', Colors.CYAN)}    Clear the screen")
+        print(f"  {self._color('/history', Colors.CYAN)}  Show transformation history")
+        print(f"  {self._color('/last', Colors.CYAN)}     Show last transformation")
+        print(f"  {self._color('/quit', Colors.CYAN)}     Exit the REPL")
+        print()
+        print(self._color("How it works:", Colors.BOLD))
+        print("  1. Enter a paragraph (press Enter to submit)")
+        print("  2. Text is neutralized via Round-Trip Translation (RTT)")
+        print("  3. LoRA generates 5 variations (shown progressively)")
+        print("  4. Press Ctrl+C during generation to stop early")
+        print()
+        print(self._color("Input shortcuts:", Colors.BOLD))
+        print("  Ctrl+A / Home    Jump to start of line")
+        print("  Ctrl+E / End     Jump to end of line")
+        print("  Up/Down arrows   Navigate input history")
+        print()
+
+    def _print_history(self) -> None:
+        """Print transformation history."""
+        if not self.history:
+            print(self._color("  No transformations yet.", Colors.DIM))
+            return
+
+        print()
+        print(self._color(f"History ({len(self.history)} transformations):", Colors.BOLD))
+        print()
+
+        for i, (inp, variations) in enumerate(self.history, 1):
+            # Truncate for display
+            inp_preview = inp[:50] + "..." if len(inp) > 50 else inp
+            first_var = variations[0] if variations else ""
+            out_preview = first_var[:50] + "..." if len(first_var) > 50 else first_var
+
+            print(f"  {self._color(f'[{i}]', Colors.DIM)}")
+            print(f"    {self._color('Input:', Colors.YELLOW)} {inp_preview}")
+            print(f"    {self._color('Output:', Colors.GREEN)} {out_preview}")
+            if len(variations) > 1:
+                print(f"    {self._color(f'({len(variations)} variations)', Colors.DIM)}")
+            print()
+
+    def _print_last(self) -> None:
+        """Print the last transformation."""
+        if not self.history:
+            print(self._color("  No transformations yet.", Colors.DIM))
+            return
+
+        inp, variations = self.history[-1]
+        print()
+        print(self._color("Last transformation:", Colors.BOLD))
+        print()
+        print(self._color("Input:", Colors.YELLOW))
+        self._print_wrapped(inp)
+        print()
+
+        # Show all variations
+        self._print_variations_final(variations)
+        print()
+
+    def _print_wrapped(self, text: str, indent: int = 2) -> None:
+        """Print text as continuous lines for clean copy-paste.
+
+        Each paragraph is printed as a single line so terminal soft-wraps
+        it visually, but selecting and copying gives text without embedded
+        line breaks.
+        """
+        prefix = " " * indent
+        for paragraph in text.split("\n\n"):
+            if paragraph.strip():
+                # Join any internal newlines into one line
+                print(prefix + " ".join(paragraph.split()))
+                print()
+
+    def _read_input(self) -> Optional[str]:
+        """Read input until Enter on a blank line."""
+        lines = []
+
+        print(self._color("│ ", Colors.BLUE), end="", flush=True)
+
+        try:
+            while True:
+                try:
+                    line = input()
+                    # Add non-empty lines to readline history
+                    if line.strip():
+                        readline.add_history(line)
+                except EOFError:
+                    return None
+
+                if not line:
+                    if lines:
+                        # Single blank line after content - submit
+                        break
+                    else:
+                        # Blank line with no content - skip
+                        return ""
+                else:
+                    lines.append(line)
+
+                # Show continuation prompt
+                print(self._color("│ ", Colors.BLUE), end="", flush=True)
+        except KeyboardInterrupt:
+            print()
+            return ""
+
+        return "\n".join(lines)
+
+    def _print_variation(self, index: int, output: str) -> None:
+        """Print a single variation as it's generated."""
+        width = get_terminal_width()
+        print()
+        print(self._color(f"  [{index}] ", Colors.CYAN, Colors.BOLD) +
+              self._color(f"({len(output.split())} words)", Colors.DIM))
+        print(self._color("  " + "─" * (width - 4), Colors.DIM))
+        self._print_wrapped(output)
+
+    def _transform_text(self, text: str, num_variations: int = 5) -> Optional[list[str]]:
+        """Transform text using the style transfer pipeline.
+
+        Args:
+            text: Input text to transform.
+            num_variations: Number of variations to generate (default 5).
+
+        Returns:
+            List of output variations, or None on error.
+        """
+        if not text.strip():
+            return None
+
+        self._generation_cancelled = False
+        variations = []
+        width = get_terminal_width()
+
+        # Print header for progressive output
+        print()
+        print(self._color("─" * width, Colors.DIM))
+        print(self._color("  Generating variations (Ctrl+C to stop):", Colors.GREEN, Colors.BOLD))
+        print(self._color("─" * width, Colors.DIM))
+
+        for i in range(num_variations):
+            if self._generation_cancelled:
+                break
+
+            try:
+                output, _ = self.transfer.transfer_paragraph(text)
+                if output and output.strip():
+                    # Avoid duplicates
+                    if output.strip() not in [v.strip() for v in variations]:
+                        variations.append(output)
+                        # Print variation immediately
+                        self._print_variation(len(variations), output)
+            except KeyboardInterrupt:
+                print()
+                print(self._color(f"\n  Generation cancelled after {len(variations)} variation(s)", Colors.YELLOW))
+                self._generation_cancelled = True
+                break
+            except Exception as e:
+                logger.warning(f"Variation {i+1} failed: {e}")
+                continue
+
+        # Print footer
+        print(self._color("─" * width, Colors.DIM))
+        if variations:
+            print(self._color(f"  {len(variations)} variation(s) generated", Colors.DIM))
+        print()
+
+        if not variations:
+            print(self._color("  Error: No variations generated", Colors.RED))
+            return None
+
+        return variations
+
+    def _print_variations_final(self, variations: list[str]) -> None:
+        """Print all variations (for /last command)."""
+        width = get_terminal_width()
+
+        print()
+        print(self._color("─" * width, Colors.DIM))
+
+        if len(variations) == 1:
+            output = variations[0]
+            print(self._color(f"  Output ({len(output.split())} words):", Colors.GREEN, Colors.BOLD))
+            print(self._color("─" * width, Colors.DIM))
+            print()
+            self._print_wrapped(output)
+        else:
+            print(self._color(f"  {len(variations)} Variations:", Colors.GREEN, Colors.BOLD))
+            print(self._color("─" * width, Colors.DIM))
+
+            for i, output in enumerate(variations, 1):
+                print()
+                print(self._color(f"  [{i}] ", Colors.CYAN, Colors.BOLD) +
+                      self._color(f"({len(output.split())} words)", Colors.DIM))
+                print(self._color("  " + "─" * (width - 4), Colors.DIM))
+                self._print_wrapped(output)
+
+        print(self._color("─" * width, Colors.DIM))
+        print()
+
+    def _handle_command(self, cmd: str) -> bool:
+        """Handle a command. Returns True to continue, False to quit."""
+        cmd = cmd.lower().strip()
+
+        if cmd in ("/quit", "/exit", "/q"):
+            return False
+        elif cmd in ("/help", "/h", "/?"):
+            self._print_help()
+        elif cmd in ("/clear", "/cls"):
+            os.system("clear" if os.name != "nt" else "cls")
+            self._print_header()
+        elif cmd in ("/history", "/hist"):
+            self._print_history()
+        elif cmd == "/last":
+            self._print_last()
+        else:
+            print(self._color(f"  Unknown command: {cmd}", Colors.RED))
+            print(self._color("  Type /help for available commands", Colors.DIM))
+
+        return True
+
+    def run(self) -> None:
+        """Run the REPL main loop."""
+        self.running = True
+        self._print_header()
+
+        while self.running:
+            try:
+                # Read input
+                text = self._read_input()
+
+                if text is None:
+                    # EOF
+                    break
+
+                if not text:
+                    # Empty input
+                    continue
+
+                # Check for commands
+                if text.startswith("/"):
+                    if not self._handle_command(text):
+                        break
+                    continue
+
+                # Transform text
+                output = self._transform_text(text)
+
+                if output:
+                    self.history.append((text, output))
+
+            except KeyboardInterrupt:
+                print()
+                print(self._color("\n  Use /quit to exit", Colors.DIM))
+                continue
+
+        # Goodbye
+        print()
+        print(self._color("  Goodbye!", Colors.CYAN))
+        print()
+
+
+def run_repl(
+    adapter_path: str | None,
+    author: str,
+    config_path: str = "config.json",
+    temperature: float = None,
+    perspective: str = "preserve",
+    verify: bool = True,
+    critic_provider=None,
+    fused_models: list | None = None,
+) -> None:
+    """Run the interactive REPL.
+
+    Args:
+        adapter_path: Path to LoRA adapter (or None when using a fused model).
+        author: Author name.
+        config_path: Path to config file.
+        temperature: Generation temperature.
+        perspective: Output perspective.
+        verify: Whether to verify entailment.
+        critic_provider: Optional critic provider for repairs.
+        fused_models: List of fused model paths (used instead of adapter).
+    """
+    # Suppress tqdm progress bars for cleaner REPL output (scoped to run_repl)
+    from ..config import load_config, setup_environment
+    setup_environment()
+    try:
+        import tqdm
+        import tqdm.auto
+        from functools import partialmethod
+        tqdm.tqdm.__init__ = partialmethod(tqdm.tqdm.__init__, disable=True)
+        tqdm.auto.tqdm.__init__ = partialmethod(tqdm.auto.tqdm.__init__, disable=True)
+    except (ImportError, AttributeError):
+        pass
+
+    # Load config
+    try:
+        app_config = load_config(config_path)
+    except FileNotFoundError:
+        app_config = None
+
+    # Build transfer config
+    if app_config:
+        gen = app_config.generation
+        transfer_config = TransferConfig(
+            temperature=temperature,
+            verify_semantic_fidelity=verify,
+            perspective=perspective,
+            max_expansion_ratio=gen.max_expansion_ratio,
+            target_expansion_ratio=gen.target_expansion_ratio,
+            expand_for_texture=gen.expand_for_texture,
+            skip_neutralization=gen.skip_neutralization,
+            use_structural_rag=gen.use_structural_rag,
+            use_structural_grafting=gen.use_structural_grafting,
+            rag_sample_size=gen.rag_sample_size,
+            use_persona=gen.use_persona,
+            apply_input_perturbation=gen.apply_input_perturbation,
+            pass_headings_unchanged=False,
+            min_paragraph_words=5,
+        )
+    else:
+        transfer_config = TransferConfig(
+            temperature=temperature,
+            verify_semantic_fidelity=verify,
+            perspective=perspective,
+            min_paragraph_words=5,
+        )
+
+    # Print loading message
+    print()
+    if fused_models:
+        print(f"Loading fused model: {fused_models[0]}")
+    else:
+        print(f"Loading LoRA adapter: {adapter_path}")
+    print(f"Author: {author}")
+    print()
+
+    # Initialize transfer
+    transfer = StyleTransfer(
+        adapter_path=adapter_path,
+        author_name=author,
+        critic_provider=critic_provider,
+        config=transfer_config,
+        fused_models=fused_models,
+    )
+
+    # Create REPL config — adapter_path is only used for display
+    repl_config = REPLConfig(
+        author=author,
+        adapter_path=adapter_path or (fused_models[0] if fused_models else ""),
+        temperature=temperature,
+        verify=verify,
+        perspective=perspective,
+    )
+
+    # Run REPL
+    repl = StyleREPL(transfer, repl_config)
+    repl.run()
