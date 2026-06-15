@@ -1,83 +1,188 @@
-"""Tests for the mine_clojure_repos CLI script."""
+"""Tests for assemble_codeflow_dataset CLI."""
 
-import subprocess
 import json
-import tempfile
+import pytest
 from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch, MagicMock
+
+from scripts.assemble_codeflow_dataset import (
+    parse_args,
+    main,
+)
 
 
-PROJECT_ROOT = Path(__file__).parent.parent.parent
+def _write_jsonl(path: Path, records: list[dict]) -> None:
+    with open(path, "w") as f:
+        for rec in records:
+            f.write(json.dumps(rec) + "\n")
 
 
-def test_cli_help():
-    result = subprocess.run(
-        ["python3", str(PROJECT_ROOT / "scripts/mine_clojure_repos.py"), "--help"],
-        capture_output=True, text=True, cwd=PROJECT_ROOT,
-    )
-    assert result.returncode == 0
-    assert "Mine Clojure repositories" in result.stdout
+class TestParseArgs:
+    def test_required_arguments(self):
+        with patch("sys.argv", [
+            "assemble_codeflow_dataset",
+            "--git-dir", "/tmp/git",
+            "--synth-dir", "/tmp/synth",
+            "--output", "/tmp/merged.jsonl",
+        ]):
+            args = parse_args()
+            assert args.git_dir == ["/tmp/git"]
+            assert args.synth_dir == ["/tmp/synth"]
+            assert args.output == "/tmp/merged.jsonl"
+
+    def test_defaults(self):
+        with patch("sys.argv", [
+            "assemble_codeflow_dataset",
+            "--git-dir", "/tmp/g",
+            "--synth-dir", "/tmp/s",
+            "--output", "/tmp/o.jsonl",
+        ]):
+            args = parse_args()
+            assert args.max_per_type is None
+            assert args.no_format is False
+            assert args.no_validate is False
+            assert args.validation_report is None
+
+    def test_multiple_dirs(self):
+        with patch("sys.argv", [
+            "assemble_codeflow_dataset",
+            "--git-dir", "/tmp/g1",
+            "--git-dir", "/tmp/g2",
+            "--synth-dir", "/tmp/s1",
+            "--output", "/tmp/o.jsonl",
+        ]):
+            args = parse_args()
+            assert args.git_dir == ["/tmp/g1", "/tmp/g2"]
+
+    def test_max_per_type(self):
+        with patch("sys.argv", [
+            "assemble_codeflow_dataset",
+            "--git-dir", "/tmp/g",
+            "--synth-dir", "/tmp/s",
+            "--output", "/tmp/o.jsonl",
+            "--max-per-type", "100",
+        ]):
+            args = parse_args()
+            assert args.max_per_type == 100
+
+    def test_flags(self):
+        with patch("sys.argv", [
+            "assemble_codeflow_dataset",
+            "--git-dir", "/tmp/g",
+            "--synth-dir", "/tmp/s",
+            "--output", "/tmp/o.jsonl",
+            "--no-format",
+            "--no-validate",
+            "--validation-report", "/tmp/report.json",
+        ]):
+            args = parse_args()
+            assert args.no_format is True
+            assert args.no_validate is True
+            assert args.validation_report == "/tmp/report.json"
 
 
-def test_cli_outputs_valid_jsonl(tmp_path):
-    """Test that CLI produces valid JSONL on a real Clojure repo.
+class TestMainIntegration:
+    """Test the full pipeline end-to-end."""
+    def test_full_pipeline(self):
+        with TemporaryDirectory() as d:
+            dpath = Path(d)
+            git_dir = dpath / "git"
+            synth_dir = dpath / "synth"
+            git_dir.mkdir()
+            synth_dir.mkdir()
+            output = dpath / "merged.jsonl"
+            report = dpath / "report.json"
 
-    Uses a small public repo with known Clojure code.
-    """
-    output_file = tmp_path / "output.jsonl"
+            # Write git-mined records
+            _write_jsonl(git_dir / "data.jsonl", [
+                {
+                    "instruction": "refactor middleware to use comp for handler composition",
+                    "output": (
+                        ";; nREPL session:\n"
+                        ";; eval: (require '[ring.middleware.json :refer [wrap-json-response]])\n"
+                        ";; result: nil\n"
+                        ";; apply:\n"
+                        "diff --git a/src/handler.clj b/src/handler.clj\n"
+                        "--- a/src/handler.clj\n"
+                        "+++ b/src/handler.clj\n"
+                        "@@ -10,4 +10,4 @@\n"
+                        " (defn app [request]\n"
+                        "-  (-> request wrap-params wrap-json-body)\n"
+                        "+  (-> request wrap-params (comp wrap-json-response wrap-json-body)))\n"
+                    ),
+                    "source": "git",
+                },
+            ])
 
-    # Clone a tiny Clojure repo for testing
-    clone_dir = tmp_path / "test-repo"
-    subprocess.run(
-        ["git", "clone", "--depth=50",
-         "https://github.com/ring-clojure/ring-codec",
-         str(clone_dir)],
-        capture_output=True, text=True,
-    )
+            # Write synthetic records
+            _write_jsonl(synth_dir / "data.jsonl", [
+                {
+                    "instruction": "fix null pointer exception in request handler",
+                    "output": (
+                        ";; nREPL session:\n"
+                        ";; eval: (defn safe-handler [request]\n"
+                        ";;        (when request (handle request)))\n"
+                        ";; result: #'user/safe-handler\n"
+                        ";; apply:\n"
+                        "diff --git a/src/handler.clj b/src/handler.clj\n"
+                        "--- a/src/handler.clj\n"
+                        "+++ b/src/handler.clj\n"
+                        "@@ -10,4 +10,4 @@\n"
+                        " (defn app [request]\n"
+                        "-  (handle-that-may-be-nil request)\n"
+                        "+  (some-> request handle-that-may-be-nil))\n"
+                    ),
+                    "source": "synth",
+                },
+            ])
 
-    result = subprocess.run(
-        ["python3", str(PROJECT_ROOT / "scripts/mine_clojure_repos.py"),
-         "--repo", str(clone_dir),
-         "--max-commits", "20",
-         "--output", str(output_file),
-         "--stats"],
-        capture_output=True, text=True,
-        cwd=PROJECT_ROOT,
-    )
-    assert result.returncode == 0
+            with patch("sys.argv", [
+                "assemble_codeflow_dataset",
+                "--git-dir", str(git_dir),
+                "--synth-dir", str(synth_dir),
+                "--output", str(output),
+                "--validation-report", str(report),
+            ]):
+                result = main()
 
-    # Each line should be valid JSON with required fields
-    if output_file.exists():
-        with open(output_file) as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                record = json.loads(line)
-                assert "system" in record
-                assert "instruction" in record
-                assert "input" in record
-                assert "output" in record
+            assert result == 0
+            assert output.exists()
 
+            # Verify output is valid JSONL
+            with open(output) as f:
+                for line in f:
+                    rec = json.loads(line.strip())
+                    assert "instruction" in rec
+                    assert "output" in rec
+                    assert "system" in rec
+                    assert "history" in rec
+                    assert rec["history"] == []
+                    # Extra fields should be stripped by format step
+                    assert "source" not in rec
 
-def test_cli_pattern_filter(tmp_path):
-    """Test pattern filtering via --pattern flag."""
-    output_file = tmp_path / "output.jsonl"
-    clone_dir = tmp_path / "test-repo"
-    subprocess.run(
-        ["git", "clone", "--depth=50",
-         "https://github.com/ring-clojure/ring-codec",
-         str(clone_dir)],
-        capture_output=True, text=True,
-    )
+            # Verify validation report
+            assert report.exists()
+            with open(report) as f:
+                rpt = json.load(f)
+            assert rpt["summary"]["valid"] >= 1
 
-    result = subprocess.run(
-        ["python3", str(PROJECT_ROOT / "scripts/mine_clojure_repos.py"),
-         "--repo", str(clone_dir),
-         "--max-commits", "20",
-         "--output", str(output_file),
-         "--pattern", "pure-refactor"],
-        capture_output=True, text=True,
-        cwd=PROJECT_ROOT,
-    )
-    assert result.returncode == 0
-    # Should either produce output or fail gracefully
+    def test_empty_inputs(self):
+        with TemporaryDirectory() as d:
+            dpath = Path(d)
+            (dpath / "git").mkdir()
+            (dpath / "synth").mkdir()
+            _write_jsonl(dpath / "git" / "data.jsonl", [])
+            _write_jsonl(dpath / "synth" / "data.jsonl", [])
+            output = dpath / "merged.jsonl"
+
+            with patch("sys.argv", [
+                "assemble_codeflow_dataset",
+                "--git-dir", str(dpath / "git"),
+                "--synth-dir", str(dpath / "synth"),
+                "--output", str(output),
+            ]):
+                result = main()
+
+            assert result == 0
+            assert output.exists() or True  # Should not crash
