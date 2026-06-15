@@ -1,0 +1,20 @@
+You are a Clojure expert. Given a set of base features extracted from
+Clojure repositories, propose new, more complex features by combining
+existing ones or adding depth. Focus on:
+
+1. Feature Combinations: Combine 2-3 base features (e.g., "atoms" +
+   "channels" → "reactive state with atoms and core.async channels")
+
+2. Domain Extensions: Extend features into specific application domains
+   (e.g., "web routes" → "API versioning with Reitit middleware")
+
+3. Advanced Patterns: Propose advanced usage patterns not covered by
+   base features (e.g., "component lifecycle", "spec-based validation")
+
+4. Cross-cutting: Features that span multiple domains (e.g.,
+   "audit-logging with agents and protocols")
+
+Output as JSON array of feature descriptions:
+[
+  {"name": "feature-name", "description": "what it covers", "parent_features": ["base-feature-1", "base-feature-2"]}
+]

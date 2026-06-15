@@ -30,45 +30,7 @@ class EvolConfig:
 
 
 # Evolution strategy prompts
-_BREADTH_SYSTEM = """You are a Clojure code taxonomy designer. Given an existing
-taxonomy of Clojure language features and development patterns, suggest NEW top-level
-categories that are NOT already covered.
-
-The existing categories are listed below. Propose 2-5 new high-level categories
-that represent genuinely different dimensions of Clojure development. Each new
-category should be:
-1. Conceptually distinct from all existing categories
-2. Specific enough to be useful for organizing code features
-3. Broad enough to contain 3-5 subcategories
-4. Relevant to real-world Clojure development
-
-For each new category, suggest 3-5 subcategories.
-
-Output as JSON array:
-[{"category": "category-id", "label": "Human Label", "description": "...",
-  "subcategories": [{"id": "sub-id", "label": "Sub Label"}]}]"""
-
-_DEPTH_SYSTEM = """You are a Clojure code taxonomy expert. Given a category and its
-existing subcategories, suggest NEW subcategories that extend coverage.
-
-For each existing subcategory, suggest 2-3 new subcategories that explore
-related but distinct areas. Each should be specific and teachable.
-
-Output as JSON array of objects with: category_id, new_subcategories (array of {id, label, description})."""
-
-_DETAIL_SYSTEM = """You are a Clojure code expert. Generate plausible code features
-that would belong to a specific taxonomy node.
-
-Each feature should be a concrete Clojure construct or pattern that:
-1. Actually exists in real Clojure projects
-2. Matches the category/subcategory description
-3. Has a specific name and one-line description
-4. Can be assigned a complexity: simple, moderate, or complex
-
-Output as JSON array:
-[{"feature_type": "type-slug", "name": "specific-name",
-  "description": "One-line what it does",
-  "complexity": "simple|moderate|complex"}]"""
+from .prompts import BREADTH_SYSTEM as _BREADTH_SYSTEM, DEPTH_SYSTEM as _DEPTH_SYSTEM, DETAIL_SYSTEM as _DETAIL_SYSTEM
 
 
 def evolve_breadth(

@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=75.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "clojure-lora-trainer"
+version = "0.2.0"
+description = "Clojure Code Flow LoRA Trainer — train Qwen-based models on Clojure code evolution"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+
+dependencies = [
+    "torch>=2.0.0",
+    "transformers>=4.36.0",
+    "peft>=0.18.0",
+    "numpy>=1.24.0",
+    "requests>=2.31.0",
+    "tiktoken>=0.5.0",
+]
+
+[project.optional-dependencies]
+api = ["openai>=1.0.0"]
+mlx = ["mlx>=0.20.0", "mlx-lm>=0.20.0"]
+json-repair = ["json-repair>=0.19.0"]
+test = ["pytest>=7.0.0", "pytest-cov>=4.0.0"]
+dev = ["clojure-lora-trainer[test,api,mlx,json-repair]"]
+
+[project.scripts]
+clj-lora-mine = "src.git_mining.miner:mine_repository"
+clj-lora-assemble = "src.assembly.assembler:assemble_dataset"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+exclude = ["src.legacy*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+norecursedirs = [".git", ".tox", "dist", "build", "*.egg"]
+markers = [
+    "spacy_dependent: Tests that depend on spaCy parsing and may vary by model version",
+]
+addopts = ["-v", "--tb=short", "--strict-markers"]
+
+[tool.setuptools.package-data]
+"synthetic" = ["prompts/*.txt"]

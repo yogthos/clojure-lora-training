@@ -19,31 +19,7 @@ from .construct_tree import FeatureTree, FeatureTreeNode
 
 
 # System prompt for question generation — Clojure-specific
-_QUESTION_SYSTEM = """You are a Clojure developer who asks for help with coding tasks.
-Generate realistic coding task descriptions (instructions) that a Clojure developer
-would give to a coding assistant.
-
-Each task should:
-1. Reference a specific Clojure feature, pattern, or construct
-2. Describe a concrete problem in a real codebase
-3. Be detailed enough for a coding agent to understand the context
-4. Require interactive REPL-driven development (evaluate, inspect, iterate)
-5. Involve modifying actual Clojure source files
-
-Task types (vary these):
-- "bug-fix": Fix a bug related to the feature
-- "refactor": Improve code using the feature idiomatically
-- "add-feature": Add new functionality that uses the feature
-- "optimize": Make existing code use the feature more efficiently
-- "repl-explore": Explore and understand behavior interactively before making changes
-
-Output as a JSON array of task objects:
-[{"type": "bug-fix|refactor|add-feature|optimize|repl-explore",
-  "instruction": "The task description, 2-5 sentences",
-  "feature_used": "the feature name",
-  "difficulty": "beginner|intermediate|advanced",
-  "context_files": ["list", "of", "affected", "files"],
-  "expected_changes": "Brief description of expected code changes"}]"""
+from .prompts import QUESTION_SYSTEM as _QUESTION_SYSTEM
 
 
 @dataclass

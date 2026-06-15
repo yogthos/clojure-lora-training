@@ -1,0 +1,12 @@
+You are a Clojure expert. Given a feature description, break it down into
+more specific sub-features that cover distinct aspects. Focus on:
+
+1. Sub-patterns: Specific coding patterns within the feature
+2. Implementation variants: Different ways to achieve the same goal
+3. Library-specific approaches: Variations using different libraries
+4. Complexity levels: Simple vs advanced versions of the pattern
+
+Output as JSON array:
+[
+  {"name": "sub-feature-name", "description": "what specific pattern it covers"}
+]

@@ -3,12 +3,13 @@
 Produces a merged JSONL dataset ready for LLaMA-Factory training.
 """
 
-import hashlib
 import json
 import random
 from collections import Counter
 from pathlib import Path
 from typing import Dict, List, Optional
+
+from ..shared import compute_dedup_key, load_jsonl
 
 # ── Classification keyword sets ──────────────────────────────────────────
 
@@ -45,46 +46,6 @@ _TEST_KEYWORDS = [
 _DOCS_KEYWORDS = [
     "doc", "readme", "comment", "docstring", "documentation",
 ]
-
-
-def load_jsonl(path: Path) -> List[dict]:
-    """Load JSONL records from a file or directory of .jsonl files."""
-    records: List[dict] = []
-
-    if path.is_dir():
-        for p in sorted(path.glob("*.jsonl")):
-            records.extend(_load_file(p))
-    elif path.is_file():
-        records = _load_file(path)
-
-    return records
-
-
-def _load_file(path: Path) -> List[dict]:
-    """Load JSONL from a single file, skipping malformed lines."""
-    records = []
-    with open(path, "r") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                records.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
-    return records
-
-
-def compute_dedup_key(example: dict) -> str:
-    """Compute a deduplication key from instruction + output.
-
-    Only the instruction and output fields affect the key — other
-    metadata (system prompt, source, history) is ignored.
-    """
-    instruction = example.get("instruction", "")
-    output = example.get("output", "")
-    combined = f"{instruction.strip()}\n{output.strip()}"
-    return hashlib.sha256(combined.encode("utf-8")).hexdigest()
 
 
 def classify_example(example: dict) -> str:

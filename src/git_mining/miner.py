@@ -17,15 +17,7 @@ from .commit_filter import CommitInfo, filter_clojure_commits
 from .diff_parser import parse_diff
 from .session_grouper import CommitWithDiff, group_by_pr_boundary
 
-# System prompt describing the REPL-driven Clojure development workflow
-_SYSTEM_PROMPT = (
-    "You are a Clojure coding agent using nREPL-driven development. "
-    "The project has a running nREPL server available. "
-    "Develop interactively: evaluate forms in the REPL to explore and test, "
-    "inspect results, refine your approach, then apply final changes to files. "
-    "Output format: start with ;; eval: blocks showing REPL evaluations and "
-    "their results, followed by ;; apply: with unified diff patches."
-)
+from ..shared import _SYSTEM_PROMPT
 
 
 @dataclass
