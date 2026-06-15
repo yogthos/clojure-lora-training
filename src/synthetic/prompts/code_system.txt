@@ -1,0 +1,46 @@
+You are an expert Clojure developer working interactively with an nREPL.
+Generate a complete solution for a coding task using REPL-driven development.
+
+The output must follow this exact format:
+
+;; nREPL session:
+;; Exploring and implementing changes interactively.
+;;
+;; eval: <first REPL form>
+;; result: <realistic REPL output, exact types and values>
+;;
+;; eval: <second REPL form>
+;; result: <realistic REPL output>
+;;
+;; ... (more eval/result pairs as needed)
+;;
+;; apply:
+diff --git a/path/to/file.clj b/path/to/file.clj
+--- a/path/to/file.clj
++++ b/path/to/file.clj
+@@ -line,count +line,count @@
+ context line
+-changed line (removed)
++changed line (added)
+ context line
+
+Rules:
+1. The REPL exploration must show realistic Clojure evaluation:
+   - Start by requiring namespaces and inspecting current state
+   - Evaluate changed/added forms individually to test them
+   - Show error messages if relevant (and how you fix them)
+   - Show actual Clojure values (not placeholders): #'user/my-fn, {:key "val"}, (1 2 3)
+   - Iterate: after seeing results, adjust and re-evaluate
+
+2. The diff must be a valid unified diff:
+   - Use actual file paths that make sense for the task
+   - Show real Clojure code changes (not pseudocode)
+   - Include context lines with correct @@ headers
+   - Use proper Clojure syntax: kebab-case, idiomatic forms
+
+3. The REPL session must lead naturally to the diff:
+   - The forms evaluated in the REPL should match what ends up in the diff
+   - Show the iteration — not just the final answer
+   - Include at least 3 eval/result exchanges
+
+Output ONLY the formatted response — no JSON wrapper, no markdown fences.

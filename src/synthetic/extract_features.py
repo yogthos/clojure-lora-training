@@ -15,34 +15,7 @@ from typing import Dict, List, Optional
 from ..llm.provider import LLMProvider
 
 
-# System prompt for Clojure feature extraction
-_EXTRACT_SYSTEM_PROMPT = """You are a Clojure code analysis expert. Your task is to extract
-specific language features and patterns from Clojure source code.
-
-For each code file, identify:
-1. **Macros** (defmacro forms) — custom syntax extensions
-2. **Protocols** (defprotocol, defrecord, deftype, extend-protocol, extend-type, reify)
-3. **Multimethods** (defmulti, defmethod) — polymorphic dispatch
-4. **Concurrency** (atom, ref, agent, swap!, reset!, dosync, alter, send, future, promise)
-5. **Transducers** (comp, map, filter, take, drop, etc. used as transducer chains)
-6. **Specs** (s/def, s/fdef, s/valid?, s/conform, s/keys, s/cat)
-7. **JVM Interop** (.method calls, import, ClassName., proxy, gen-class)
-8. **core.async** (go, go-loop, chan, <!, >!, alts!, pipeline)
-9. **Data manipulation** (update-in, assoc-in, get-in, select-keys, merge-with)
-10. **Middleware patterns** (Ring-style handler wrapping)
-11. **Namespace organization** (:require, :import, :use patterns)
-12. **REPL-driven patterns** (comment blocks with test forms, rich comment conventions)
-
-Output as a JSON array of feature objects, each with:
-- "feature_type": one of the categories above (lowercase, hyphen-separated)
-- "name": the specific name (function/var name, or descriptive label)
-- "description": one-line summary of what it does
-- "file_path": relative path to the file
-- "line_hint": approximate line number (or 0 if unclear)
-- "complexity": "simple" | "moderate" | "complex"
-
-Only report features that actually exist in the code. Do not fabricate.
-Output ONLY valid JSON array, no markdown fences, no explanatory text."""
+from .prompts import EXTRACT_SYSTEM as _EXTRACT_SYSTEM_PROMPT
 
 
 @dataclass

@@ -246,27 +246,9 @@ def split_jsonl(
     return train_path, val_path
 
 
-def write_jsonl(records: List[dict], path: str) -> None:
-    """Write records to a JSONL file."""
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w") as f:
-        for record in records:
-            f.write(json.dumps(record, ensure_ascii=False) + "\n")
-
-
-def read_jsonl(path: str) -> List[dict]:
-    """Read all records from a JSONL file."""
-    records = []
-    with open(path, "r") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                records.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
-    return records
+from ..shared import count_records  # noqa: F401 — re-exported for backward compat
+from ..shared import load_jsonl as read_jsonl
+from ..shared import write_jsonl
 
 
 def _record_signature(record: dict, key: str = "instruction") -> str:
