@@ -1,210 +1,107 @@
-# Revenant
+# Clojure LoRA Trainer
 
-Transform text to match a target author's writing style while preserving semantic meaning. Uses LoRA-adapted language models for fast, consistent style transfer.
+Train Qwen-based models on Clojure code evolution using the **Code Flow** paradigm. Mines git repositories for commit transitions, generates synthetic training data from Clojure feature taxonomies, and assembles JSONL datasets for LLaMA-Factory fine-tuning.
 
-## Requirements
+The trained model learns to develop Clojure code interactively via nREPL — evaluating forms, inspecting results, and applying unified diffs — rather than producing static code snapshots.
 
-- Python 3.9+
-- Apple Silicon Mac (for MLX inference)
-- ~30GB disk space (6-bit quantized model + adapter)
-- DeepSeek API key (for RTT neutralization and training data generation)
+## Architecture
+
+```
+┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
+│   git_mining/    │    │   synthetic/      │    │   assembly/      │
+│                     │    │                     │    │                     │
+│ • commit diffs    │    │ • feature trees    │    │ • merge & dedup  │
+│ • session groups  │    │ • code generation  │    │ • balance types  │
+│ • before/after    │    │ • question gen     │    │ • LLaMA-Factory  │
+│   multi-file      │    │ • feature evo      │    │   formatting     │
+└────────┬────────┘    └────────┬─────────┘    └────────┬────────┘
+         │                      │                        │
+         ▼                      ▼                        ▼
+    git-mined              synthetic                  training
+    JSONL pairs            JSONL pairs               dataset
+                                                        │
+                                              ┌─────────▼─────────┐
+                                              │  LLaMA-Factory     │
+                                              │  LoRA fine-tune    │
+                                              │  Qwen3.6-Coder-27B │
+                                              └───────────────────┘
+```
+
+### Key modules
+
+- **`src/shared.py`** — Single source of truth: system prompt, JSONL I/O, dedup keys
+- **`src/git_mining/`** — Mines Clojure repos for commit transitions with multi-file diffs
+- **`src/synthetic/`** — Generates instruction/response pairs from Clojure feature taxonomies
+- **`src/assembly/`** — Merges, deduplicates, balances, and formats the final dataset
+- **`src/synthetic/prompts/`** — Prompt templates as standalone `.txt` files (editable without touching Python)
+
+Legacy text-style-transfer modules (`generation/`, `vocabulary/`, `persona/`, `repl/`, `rag/`, `validation/`) are marked `[LEGACY]` and kept for reference.
 
 ## Quick Start
 
 ```bash
 # Setup
-python -m venv venv && source venv/bin/activate
-pip install -r requirements.txt
-python -m spacy download en_core_web_lg
-cp config.json.sample config.json   # Add your DeepSeek API key
+python3 -m venv venv && source venv/bin/activate
+pip install -e .
 
-# Download and quantize base model (one-time, ~70GB download → 26GB output)
-python -m mlx_lm convert \
-    --hf-path Qwen/Qwen3.5-35B-A3B-Base \
-    --mlx-path models/Qwen3.5-35B-A3B-Base-6bit-MLX \
-    -q --q-bits 6
+# Mining: extract commit histories from Clojure repos
+python3 scripts/mine_clojure_repos.py \\
+    --repo /path/to/clojure-project \\
+    --output data/git-mining/output
 
-# Convert adapter (if using PEFT format from cloud training)
-python scripts/convert_peft_to_mlx.py \
-    --input lora_adapters/author_peft \
-    --output lora_adapters/author_mlx \
-    --mlx-model models/Qwen3.5-35B-A3B-Base-6bit-MLX
+# Synthetic: generate training data from Clojure feature taxonomy
+python3 scripts/generate_synthetic_data.py \\
+    --features-file data/features/clojure_features.json \\
+    --output data/synthetic/output \\
+    --target 500
 
-# Run style transfer
-python restyle.py input.md -o output.md \
-    --adapter lora_adapters/author_mlx \
-    --author "Author Name"
+# Assembly: merge, deduplicate, balance, format
+python3 scripts/assemble_codeflow_dataset.py \\
+    --git-dir data/git-mining/output \\
+    --synth-dir data/synthetic/output \\
+    --output data/training/codeflow.jsonl
 ```
 
-## Usage
+## Training Data Format
 
-```bash
-# Basic transfer
-python restyle.py input.md -o output.md --author "Bertrand Russell"
-
-# With adapter scale override
-python restyle.py input.md -o output.md \
-    --adapter lora_adapters/russell_mlx:2.0 \
-    --author "Bertrand Russell"
-
-# Interactive mode (5 variations per input)
-python restyle.py --repl --adapter lora_adapters/russell_mlx --author "Bertrand Russell"
-
-# Skip verification for speed
-python restyle.py input.md -o output.md --no-verify
-
-# List available adapters
-python restyle.py --list-adapters
-```
-
-### CLI Options
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--adapter PATH[:SCALE]` | config | LoRA adapter path with optional scale (can repeat to blend) |
-| `--model PATH` | config | Fused model path (LoRA pre-merged into base); overrides `--adapter`. See [docs/fused_models.md](docs/fused_models.md) |
-| `--author NAME` | - | Author name (optional if adapter has metadata) |
-| `--temperature FLOAT` | config | Generation temperature |
-| `--perspective MODE` | config | Output perspective: `preserve`, `first_person_singular`, `first_person_plural`, `third_person`, `author_voice_third_person` |
-| `--lora-scale FLOAT` | config | LoRA influence scale |
-| `--expand` / `--no-expand` | config | Enable/disable texture expansion |
-| `--no-verify` | false | Skip entailment verification |
-| `--repl` | false | Interactive mode |
-| `--list-adapters` | false | List available LoRA adapters |
-| `-v` | false | Verbose output |
-
-## Architecture
-
-```
-Input → Perspective Conversion → RTT Neutralization → Perturbation → LoRA Generation → Verification → Output
-```
-
-| Stage | Purpose |
-|-------|---------|
-| Perspective Conversion | Convert to target POV before neutralization |
-| RTT Neutralization | Strip source style via English → Mandarin → English |
-| Perturbation | Add 8% noise to match training distribution |
-| LoRA Generation | Single forward pass with style adapter |
-| Semantic Verification | NLI entailment + entity checking |
-| Post-Processing | Replace overused words, grammar correction |
-
-### Key Modules
-
-| Module | Purpose |
-|--------|---------|
-| `src/generation/lora_generator.py` | MLX LoRA inference |
-| `src/generation/transfer.py` | Pipeline orchestration |
-| `src/validation/semantic_verifier.py` | Content verification |
-| `src/vocabulary/repetition_reducer.py` | Post-processing |
-| `src/persona/prompt_builder.py` | Author persona prompts |
-| `src/rag/structural_rag.py` | Style pattern retrieval |
-
-## Training Your Own Adapter
-
-### Overview
-
-```
-1. Curate Corpus → 2. Generate Training Data → 3. Train LoRA → 4. Convert to MLX
-```
-
-### 1. Curate Corpus
-
-Collect 50k+ words of clean author prose:
-
-```bash
-python scripts/curate_corpus.py \
-    --input data/corpus/raw/author.txt \
-    --output data/corpus/curated/author.txt
-```
-
-### 2. Generate Training Data
-
-```bash
-python scripts/generate_flat_training.py \
-    --corpus data/corpus/curated/author.txt \
-    --author "Author Name" \
-    --output data/training/author \
-    --snowflake-topics data/training/author/snowflake_topics.py \
-    --format llama_factory --skip-curation --workers 4
-```
-
-Then filter bad entries:
-
-```bash
-python scripts/filter_training_data.py data/training/author/train.jsonl
-```
-
-### 3. Train LoRA
-
-Training requires a GPU with 80GB+ VRAM (A100 or H100 on RunPod).
-See [docs/runpod.md](docs/runpod.md) for cloud training setup.
-
-### 4. Convert to MLX
-
-```bash
-python scripts/convert_peft_to_mlx.py \
-    --input lora_adapters/author_peft \
-    --output lora_adapters/author_mlx \
-    --mlx-model models/Qwen3.5-35B-A3B-Base-6bit-MLX
-```
-
-See [docs/inference.md](docs/inference.md) for detailed inference setup.
-
-## Documentation
-
-| Document | Contents |
-|----------|----------|
-| [docs/style_transfer_training.md](docs/style_transfer_training.md) | Training principles, data format, hyperparameters, experimental findings |
-| [docs/qwen25_training.md](docs/qwen25_training.md) | Qwen 2.5 dense model specifics |
-| [docs/qwen35_training.md](docs/qwen35_training.md) | Qwen 3.5 MoE specifics, rsLoRA, config evolution |
-| [docs/inference.md](docs/inference.md) | Local MLX setup, adapter conversion, pipeline |
-| [docs/runpod.md](docs/runpod.md) | RunPod cloud training setup |
-
-## Configuration
-
-Key settings in `config.json`:
+Each record is a JSON object compatible with LLaMA-Factory:
 
 ```json
 {
-  "generation": {
-    "expand_for_texture": false,
-    "apply_input_perturbation": true,
-    "use_structural_rag": true,
-    "use_persona": true,
-    "lora_adapters": {
-      "lora_adapters/russell_mlx": {
-        "enabled": true,
-        "scale": 2.0,
-        "temperature": 0.7,
-        "worldview": "russell_worldview.txt",
-        "logit_bias": { ";": -2.0, "—": 1.5 }
-      }
-    }
-  }
+  "instruction": "Fix the race condition in the core.async pipeline...",
+  "input": "",
+  "output": ";; nREPL session:\n;; eval: (require '[clojure.core.async :refer [chan go <!]])\n;; result: nil\n;; ...\n;; apply:\ndiff --git a/src/pipeline.clj b/src/pipeline.clj\n...",
+  "system": "You are a Clojure coding agent using nREPL-driven development..."
 }
 ```
 
-| Setting | Description |
-|---------|-------------|
-| `scale` | LoRA influence (0.0=base, 1.0=full, >1.0=amplified) |
-| `temperature` | Generation creativity (lower=more coherent) |
-| `worldview` | Persona prompt file in `prompts/` (must match training frames exactly) |
-| `apply_input_perturbation` | Add 8% noise to match training distribution |
-| `expand_for_texture` | Pre-expand content for longer output |
-| `logit_bias` | Per-character additive bias. Positive = encourage (e.g. `"—": 1.5`), negative = suppress (e.g. `";": -2.0`). Typical range −5 to +5; start around ±1.5–2.0 and tune |
-| `use_structural_rag` | Per-adapter override for the global RAG flag |
+The output format interleaves REPL evaluation blocks with final unified diffs, teaching the model to develop interactively.
 
-## Troubleshooting
+## Training Configuration
 
-| Problem | Solution |
-|---------|----------|
-| Style too weak | Increase adapter `scale` in config.json |
-| Output unchanged | Adapter not loading — check `metadata.json` points to local model |
-| Content hallucinated | Lower `scale`, check semantic verification is enabled |
-| OOM at inference | Model path points to HF repo (70GB) not local quantized model |
-| Thinking tokens in output | Chat template override missing — see [docs/inference.md](docs/inference.md) |
-| Multi-turn conversation | `<|im_end|>` not in stop tokens — see [docs/inference.md](docs/inference.md) |
+Target: **Qwen3.6-Coder-27B** (BF16, ~54GB) on RunPod A100 80GB.
+
+| Parameter | Value |
+|-----------|-------|
+| LoRA rank | 64 |
+| LoRA alpha | 128 |
+| Target modules | All linear layers |
+| Learning rate | 3e-4 cosine schedule |
+| Batch size | 2–4 |
+| Gradient accumulation | → effective batch 16–32 |
+| Epochs | 3 |
+| Max context | 8K (expandable with gradient checkpointing) |
+| Training duration | 6–12 hours on A100 |
+
+Inference runs locally on MLX (Apple Silicon).
+
+## Requirements
+
+- Python 3.10+
+- PyTorch 2.0+, Transformers 4.36+, PEFT 0.18+
+- For cloud training: A100 80GB or H100 80GB (RunPod)
+- For local inference: Apple Silicon Mac with MLX
 
 ## License
 
-MIT License
+MIT
