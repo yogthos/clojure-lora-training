@@ -6,6 +6,8 @@ ENV/
 
 .env
 
+repositories
+
 # Python
 __pycache__/
 *.py[cod]

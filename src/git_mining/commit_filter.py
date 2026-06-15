@@ -11,6 +11,7 @@ class CommitInfo:
     message: str
     files: List[str] = field(default_factory=list)
     is_merge: bool = False
+    timestamp: str = ""
 
 
 # Files that are build/config, not meaningful code changes
