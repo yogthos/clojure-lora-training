@@ -376,7 +376,7 @@ class TestTransferAppliesFusedModelSettings:
         """When a fused model has perspective/verify_entailment/etc set, TransferConfig
         should adopt those values (mirroring the adapter override path)."""
         from src.config import FusedModelConfig
-        from src.generation.transfer import TransferConfig, _apply_fused_model_overrides
+        from src.style_transfer.transfer import TransferConfig, _apply_fused_model_overrides
 
         cfg = TransferConfig()
         cfg.expand_for_texture_explicit = False  # Not set by CLI
@@ -399,7 +399,7 @@ class TestTransferAppliesFusedModelSettings:
     def test_fused_model_cli_expand_takes_priority(self):
         """If expand_for_texture_explicit is True, fused cfg should not override."""
         from src.config import FusedModelConfig
-        from src.generation.transfer import TransferConfig, _apply_fused_model_overrides
+        from src.style_transfer.transfer import TransferConfig, _apply_fused_model_overrides
 
         cfg = TransferConfig()
         cfg.expand_for_texture = False
@@ -600,7 +600,7 @@ class TestGenerationConfigFromFusedModel:
     def test_from_fused_model_applies_all_gen_settings(self):
         """from_fused_model should copy temperature, top_p, min_p, etc. from FusedModelConfig."""
         from src.config import FusedModelConfig
-        from src.generation.base_generator import GenerationConfig
+        from src.style_transfer.base_generator import GenerationConfig
 
         fused = FusedModelConfig(
             temperature=0.42,

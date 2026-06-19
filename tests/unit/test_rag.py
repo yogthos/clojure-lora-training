@@ -1515,7 +1515,7 @@ class TestDefaultBaseModelMatch:
 
     def test_factory_and_generator_default_match(self):
         """Factory default base model should match LoRAStyleGenerator default."""
-        from src.generation.lora_generator import LoRAStyleGenerator
+        from src.style_transfer.lora_generator import LoRAStyleGenerator
         import inspect
 
         # Get the default from LoRAStyleGenerator.__init__
@@ -1523,7 +1523,7 @@ class TestDefaultBaseModelMatch:
         generator_default = sig.parameters["base_model"].default
 
         # Factory should use the same default (check source)
-        from src.generation import factory
+        from src.style_transfer import factory
         source = inspect.getsource(factory.create_style_generator)
         assert generator_default in source, (
             f"Factory default base model does not match generator default '{generator_default}'"

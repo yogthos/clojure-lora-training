@@ -1,7 +1,7 @@
 """Tests for diff pattern classifier."""
 
 import pytest
-from src.git_mining.pattern_classifier import (
+from src.codeflow.git_mining.pattern_classifier import (
     classify_diff,
     DiffClassification,
     _is_clojure_source,

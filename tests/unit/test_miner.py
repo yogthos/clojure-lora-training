@@ -5,7 +5,7 @@ import pytest
 import tempfile
 import subprocess
 from pathlib import Path
-from src.git_mining.miner import (
+from src.codeflow.git_mining.miner import (
     mine_repository,
     MinedExample,
     get_commit_list,
@@ -100,7 +100,7 @@ class TestFormatting:
     """Test the output formatting utilities."""
 
     def test_format_before_state(self):
-        from src.git_mining.miner import _format_file_tree
+        from src.codeflow.git_mining.miner import _format_file_tree
         state = {
             "src/core.clj": "(ns app.core)\n(defn main [] 42)",
             "src/utils.clj": "(ns app.utils)\n(defn add [a b] (+ a b))",
@@ -112,7 +112,7 @@ class TestFormatting:
         assert "(defn add [a b] (+ a b))" in formatted
 
     def test_format_instruction_with_repl(self):
-        from src.git_mining.miner import _format_output_with_repl
+        from src.codeflow.git_mining.miner import _format_output_with_repl
         diff = "@@ -1 +1 @@\n-(def x 1)\n+(def x 2)"
         instruction = "Refactor: rename to meaningful name"
         files_before = {"src/core.clj": "(def x 1)"}

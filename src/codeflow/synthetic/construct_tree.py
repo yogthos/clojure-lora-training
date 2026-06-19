@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple
 from collections import defaultdict
 
-from ..llm.provider import LLMProvider
+from ...llm.provider import LLMProvider
 
 
 # Top-level Clojure feature taxonomy categories

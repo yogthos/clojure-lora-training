@@ -16,7 +16,7 @@ class TestNeutralizeChunked:
 
     def test_long_single_sentence_no_recursion(self):
         """A 400-word sentence with no periods should not recurse infinitely."""
-        from src.llm.mlx_provider import RTTNeutralizer
+        from src.llm.rtt_neutralizer import RTTNeutralizer
 
         # Create a mock instance
         provider = RTTNeutralizer.__new__(RTTNeutralizer)
@@ -52,7 +52,7 @@ class TestNeutralizeChunked:
 
     def test_chunk_over_300_words_handled(self):
         """Chunks >300 words should go to _do_neutralize directly."""
-        from src.llm.mlx_provider import RTTNeutralizer
+        from src.llm.rtt_neutralizer import RTTNeutralizer
 
         provider = RTTNeutralizer.__new__(RTTNeutralizer)
         provider._model = None
@@ -80,7 +80,7 @@ class TestRttOnceHelper:
     and _do_neutralize() to eliminate the ~60-line duplicated loop body."""
 
     def _provider(self):
-        from src.llm.mlx_provider import RTTNeutralizer
+        from src.llm.rtt_neutralizer import RTTNeutralizer
         provider = RTTNeutralizer.__new__(RTTNeutralizer)
         provider._model = None
         provider._tokenizer = None
@@ -142,7 +142,7 @@ class TestNeutralizerSharedMethodParity:
 
     @pytest.fixture
     def mlx_neutralizer(self):
-        from src.llm.mlx_provider import RTTNeutralizer
+        from src.llm.rtt_neutralizer import RTTNeutralizer
         obj = RTTNeutralizer.__new__(RTTNeutralizer)
         obj._model = None
         obj._tokenizer = None
@@ -150,7 +150,7 @@ class TestNeutralizerSharedMethodParity:
 
     @pytest.fixture
     def ds_neutralizer(self):
-        from src.llm.mlx_provider import DeepSeekRTTNeutralizer
+        from src.llm.rtt_neutralizer import DeepSeekRTTNeutralizer
         obj = DeepSeekRTTNeutralizer.__new__(DeepSeekRTTNeutralizer)
         # Don't call __init__ — avoids the API key requirement.
         return obj

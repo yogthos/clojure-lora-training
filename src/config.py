@@ -115,16 +115,16 @@ FusedModelConfig = ModelConfig
 
 @dataclass
 class GenerationConfig:
-    """Configuration for text generation."""
+    """Configuration for text generation (model selection + length control).
+
+    Transfer-pipeline toggles (neutralization, RAG, persona, perturbation) live
+    in PipelineConfig; this holds only the inference-side knobs.
+    """
 
     # Length control settings
     max_expansion_ratio: float = 2.5  # Max output/input word ratio before warning
-    target_expansion_ratio: float = (
-        1.5  # Target for LoRA generation (1.5 = 50% expansion for flourish)
-    )
-    expand_for_texture: bool = (
-        False  # Add stronger expansion prompt to encourage elaboration/flourishes
-    )
+    target_expansion_ratio: float = 1.5  # Target for LoRA generation (50% expansion)
+    expand_for_texture: bool = False
 
     # Model selection: use_adapter=True loads adapter+base, use_adapter=False loads fused model directly
     use_adapter: bool = True
@@ -135,29 +135,25 @@ class GenerationConfig:
     # LoRA adapter settings (path -> config mapping)
     lora_adapters: Dict[str, "ModelConfig"] = field(default_factory=dict)
 
-    # Neutralization settings
-    skip_neutralization: bool = (
-        False  # If True, skip RTT and use original text as input
-    )
-
     # Document handling
-    pass_headings_unchanged: bool = True  # Don't transform headings
     min_paragraph_words: int = 10  # Skip paragraphs shorter than this
+
+
+@dataclass
+class PipelineConfig:
+    """Transfer-pipeline toggles, read into StyleTransfer's TransferConfig."""
+
+    skip_neutralization: bool = False  # If True, skip RTT and use original text as input
+    pass_headings_unchanged: bool = True  # Don't transform headings
 
     # RAG settings
     use_structural_rag: bool = True  # Enable structural RAG for rhythm/syntax guidance
-    use_structural_grafting: bool = (
-        True  # Enable structural grafting for argument skeletons
-    )
-    rag_sample_size: int = (
-        300  # Number of corpus chunks to sample for rhythm pattern analysis
-    )
+    use_structural_grafting: bool = True  # Enable structural grafting for argument skeletons
+    rag_sample_size: int = 300  # Corpus chunks to sample for rhythm pattern analysis
 
     # Persona settings
     use_persona: bool = True  # Enable persona-based prompting
-    apply_input_perturbation: bool = (
-        True  # Apply 8% noise to match training distribution
-    )
+    apply_input_perturbation: bool = True  # Apply 8% noise to match training distribution
 
 
 @dataclass
@@ -204,6 +200,7 @@ class Config:
 
     llm: LLMConfig = field(default_factory=LLMConfig)
     generation: GenerationConfig = field(default_factory=GenerationConfig)
+    pipeline: PipelineConfig = field(default_factory=PipelineConfig)
     style: StyleConfig = field(default_factory=StyleConfig)
     log_level: str = "INFO"
     log_json: bool = False
@@ -402,14 +399,20 @@ def load_config(config_path: str = "config.json") -> Config:
             use_adapter=gen.get("use_adapter", True),
             models=_parse_fused_models(gen.get("models", {})),
             lora_adapters=_parse_lora_adapters(gen.get("lora_adapters", {})),
-            skip_neutralization=gen.get("skip_neutralization", False),
-            pass_headings_unchanged=gen.get("pass_headings_unchanged", True),
             min_paragraph_words=gen.get("min_paragraph_words", 10),
-            use_structural_rag=gen.get("use_structural_rag", True),
-            use_structural_grafting=gen.get("use_structural_grafting", True),
-            rag_sample_size=gen.get("rag_sample_size", 300),
-            use_persona=gen.get("use_persona", True),
-            apply_input_perturbation=gen.get("apply_input_perturbation", True),
+        )
+
+        # Pipeline toggles: new "pipeline" section, with fallback to "generation"
+        # for configs written before the split.
+        p = data.get("pipeline", gen)
+        config.pipeline = PipelineConfig(
+            skip_neutralization=p.get("skip_neutralization", False),
+            pass_headings_unchanged=p.get("pass_headings_unchanged", True),
+            use_structural_rag=p.get("use_structural_rag", True),
+            use_structural_grafting=p.get("use_structural_grafting", True),
+            rag_sample_size=p.get("rag_sample_size", 300),
+            use_persona=p.get("use_persona", True),
+            apply_input_perturbation=p.get("apply_input_perturbation", True),
         )
 
     if "style" in data:

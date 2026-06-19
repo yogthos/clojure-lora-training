@@ -3,7 +3,7 @@
 import json
 import pytest
 import numpy as np
-from src.synthetic.cluster import (
+from src.codeflow.synthetic.cluster import (
     kcenter_greedy,
     embed_examples,
     select_coreset,

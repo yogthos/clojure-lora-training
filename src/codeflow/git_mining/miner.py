@@ -17,7 +17,7 @@ from .commit_filter import CommitInfo, filter_clojure_commits
 from .diff_parser import parse_diff
 from .session_grouper import CommitWithDiff, group_by_pr_boundary
 
-from ..shared import _SYSTEM_PROMPT
+from ...shared import _SYSTEM_PROMPT
 
 
 @dataclass

@@ -3,7 +3,7 @@
 import json
 import pytest
 from pathlib import Path
-from src.synthetic.extract_features import (
+from src.codeflow.synthetic.extract_features import (
     ClojureFeature,
     _is_clojure_file,
     _read_file_safe,

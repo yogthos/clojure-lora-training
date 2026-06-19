@@ -5,7 +5,7 @@ import pytest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from src.assembly.formatter import (
+from src.codeflow.assembly.formatter import (
     format_record,
     format_jsonl,
     format_jsonl_file,

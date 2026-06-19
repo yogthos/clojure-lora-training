@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from ..llm.provider import LLMProvider
+from ...llm.provider import LLMProvider
 
 
 from .prompts import EXTRACT_SYSTEM as _EXTRACT_SYSTEM_PROMPT

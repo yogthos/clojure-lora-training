@@ -14,7 +14,7 @@ import random
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
-from ..llm.provider import LLMProvider
+from ...llm.provider import LLMProvider
 from .construct_tree import FeatureTree, FeatureTreeNode
 
 

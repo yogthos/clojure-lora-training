@@ -16,7 +16,7 @@ class TestFictionMarkerLogging:
 
     def test_fiction_marker_attribute_error_logged(self):
         """AttributeError when setting fiction_markers should be caught and logged."""
-        from src.generation.factory import _set_fiction_markers
+        from src.style_transfer.factory import _set_fiction_markers
         from src.config import ModelConfig
 
         # Generator that raises AttributeError on attribute assignment
@@ -27,7 +27,7 @@ class TestFictionMarkerLogging:
 
         with patch('src.config.get_adapter_config',
                    return_value=ModelConfig(fiction_markers=["marker1"])):
-            with patch('src.generation.factory.logger') as mock_logger:
+            with patch('src.style_transfer.factory.logger') as mock_logger:
                 _set_fiction_markers(generator, "some/adapter/path")
 
         mock_logger.warning.assert_called_once()
@@ -36,7 +36,7 @@ class TestFictionMarkerLogging:
     def test_fiction_marker_unexpected_errors_propagate(self):
         """Non-(ImportError, AttributeError) exceptions must surface as real bugs,
         not be silently swallowed. Config errors are already handled internally."""
-        from src.generation.factory import _set_fiction_markers
+        from src.style_transfer.factory import _set_fiction_markers
 
         mock_generator = MagicMock()
 
@@ -46,14 +46,14 @@ class TestFictionMarkerLogging:
 
     def test_fiction_marker_success_no_warning(self):
         """When get_adapter_config succeeds, no warning should be logged."""
-        from src.generation.factory import _set_fiction_markers
+        from src.style_transfer.factory import _set_fiction_markers
         from src.config import LoRAAdapterConfig
 
         mock_generator = MagicMock()
 
         with patch('src.config.get_adapter_config',
                    return_value=LoRAAdapterConfig(fiction_markers=["marker1"])):
-            with patch('src.generation.factory.logger') as mock_logger:
+            with patch('src.style_transfer.factory.logger') as mock_logger:
                 _set_fiction_markers(mock_generator, "some/adapter/path")
 
         mock_logger.warning.assert_not_called()
@@ -74,7 +74,7 @@ class TestFictionMarkersFusedModel:
         """When adapter config has no markers, _set_fiction_markers should consult
         the fused-model config. A path pointing at a fused model has no adapter
         entry, so the adapter lookup returns defaults (empty markers)."""
-        from src.generation.factory import _set_fiction_markers
+        from src.style_transfer.factory import _set_fiction_markers
         from src.config import LoRAAdapterConfig, FusedModelConfig
 
         mock_generator = MagicMock()

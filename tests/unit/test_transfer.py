@@ -22,7 +22,7 @@ class TestTransferConfig:
 
     def test_default_values(self):
         """Test that default values are sensible."""
-        from src.generation.transfer import TransferConfig
+        from src.style_transfer.transfer import TransferConfig
 
         config = TransferConfig()
 
@@ -33,7 +33,7 @@ class TestTransferConfig:
         """max_tokens / top_p belong on GenerationConfig. TransferConfig used to
         carry parallel unused copies — C5 removed them. Regression guard so
         they can't sneak back in."""
-        from src.generation.transfer import TransferConfig
+        from src.style_transfer.transfer import TransferConfig
 
         config = TransferConfig()
         assert not hasattr(config, "max_tokens"), (
@@ -47,7 +47,7 @@ class TestTransferConfig:
 
     def test_custom_values(self):
         """Test that custom values are applied."""
-        from src.generation.transfer import TransferConfig
+        from src.style_transfer.transfer import TransferConfig
 
         config = TransferConfig(
             temperature=0.8,
@@ -59,7 +59,7 @@ class TestTransferConfig:
 
     def test_perspective_options(self):
         """Test perspective configuration."""
-        from src.generation.transfer import TransferConfig
+        from src.style_transfer.transfer import TransferConfig
 
         config = TransferConfig(perspective="first_person_singular")
         assert config.perspective == "first_person_singular"
@@ -69,7 +69,7 @@ class TestTransferConfig:
 
     def test_expansion_ratios(self):
         """Test expansion ratio configuration."""
-        from src.generation.transfer import TransferConfig
+        from src.style_transfer.transfer import TransferConfig
 
         config = TransferConfig(
             max_expansion_ratio=2.0,
@@ -89,7 +89,7 @@ class TestTransferStats:
 
     def test_default_values(self):
         """Test default stats values."""
-        from src.generation.transfer import TransferStats
+        from src.style_transfer.transfer import TransferStats
 
         stats = TransferStats()
 
@@ -98,7 +98,7 @@ class TestTransferStats:
 
     def test_to_dict(self):
         """Test conversion to dictionary."""
-        from src.generation.transfer import TransferStats
+        from src.style_transfer.transfer import TransferStats
 
         stats = TransferStats(
             paragraphs_processed=5,
@@ -116,7 +116,7 @@ class TestTransferStats:
 
     def test_to_dict_empty_scores(self):
         """Test to_dict with empty entailment scores."""
-        from src.generation.transfer import TransferStats
+        from src.style_transfer.transfer import TransferStats
 
         stats = TransferStats()
         d = stats.to_dict()
@@ -146,10 +146,10 @@ class TestStyleTransfer:
         critic.call.return_value = "Repaired text here."
         return critic
 
-    @patch('src.generation.transfer.create_style_generator')
+    @patch('src.style_transfer.transfer.create_style_generator')
     def test_init_with_adapter(self, mock_generator_class, mock_critic):
         """Test initialization with adapter path."""
-        from src.generation.transfer import StyleTransfer, TransferConfig
+        from src.style_transfer.transfer import StyleTransfer, TransferConfig
 
         config = TransferConfig(verify_semantic_fidelity=False)
 
@@ -163,10 +163,10 @@ class TestStyleTransfer:
         assert transfer.author == "Test Author"
         mock_generator_class.assert_called_once()
 
-    @patch('src.generation.transfer.create_style_generator')
+    @patch('src.style_transfer.transfer.create_style_generator')
     def test_init_without_adapter(self, mock_generator_class, mock_critic):
         """Test initialization without adapter (base model only)."""
-        from src.generation.transfer import StyleTransfer, TransferConfig
+        from src.style_transfer.transfer import StyleTransfer, TransferConfig
 
         config = TransferConfig(verify_semantic_fidelity=False)
 
@@ -179,10 +179,10 @@ class TestStyleTransfer:
 
         assert transfer.author == "Test Author"
 
-    @patch('src.generation.transfer.create_style_generator')
+    @patch('src.style_transfer.transfer.create_style_generator')
     def test_ensure_complete_ending_with_period(self, mock_generator_class, mock_critic):
         """Test that text ending with period is unchanged."""
-        from src.generation.transfer import StyleTransfer, TransferConfig
+        from src.style_transfer.transfer import StyleTransfer, TransferConfig
 
         config = TransferConfig(verify_semantic_fidelity=False)
         transfer = StyleTransfer(
@@ -197,10 +197,10 @@ class TestStyleTransfer:
 
         assert result == text
 
-    @patch('src.generation.transfer.create_style_generator')
+    @patch('src.style_transfer.transfer.create_style_generator')
     def test_ensure_complete_ending_adds_period(self, mock_generator_class, mock_critic):
         """Test that incomplete text gets period added."""
-        from src.generation.transfer import StyleTransfer, TransferConfig
+        from src.style_transfer.transfer import StyleTransfer, TransferConfig
 
         config = TransferConfig(verify_semantic_fidelity=False)
         transfer = StyleTransfer(
@@ -215,10 +215,10 @@ class TestStyleTransfer:
 
         assert result.endswith(".")
 
-    @patch('src.generation.transfer.create_style_generator')
+    @patch('src.style_transfer.transfer.create_style_generator')
     def test_transfer_paragraph_skips_short(self, mock_generator_class, mock_critic):
         """Test that short paragraphs are skipped."""
-        from src.generation.transfer import StyleTransfer, TransferConfig
+        from src.style_transfer.transfer import StyleTransfer, TransferConfig
 
         config = TransferConfig(
             verify_semantic_fidelity=False,
@@ -239,10 +239,10 @@ class TestStyleTransfer:
         assert result == para
         assert score == 1.0
 
-    @patch('src.generation.transfer.create_style_generator')
+    @patch('src.style_transfer.transfer.create_style_generator')
     def test_init_uses_default_services_when_none_passed(self, mock_generator_class, mock_critic):
         """Without a services arg, StyleTransfer falls back to the process default."""
-        from src.generation.transfer import StyleTransfer, TransferConfig
+        from src.style_transfer.transfer import StyleTransfer, TransferConfig
         from src.services import get_default_services
 
         config = TransferConfig(verify_semantic_fidelity=False)
@@ -254,11 +254,11 @@ class TestStyleTransfer:
         )
         assert transfer.services is get_default_services()
 
-    @patch('src.generation.transfer.create_style_generator')
+    @patch('src.style_transfer.transfer.create_style_generator')
     def test_init_accepts_injected_services(self, mock_generator_class, mock_critic):
         """An explicit Services instance is stored on the transfer and used
         instead of the module-level default — the primary test seam."""
-        from src.generation.transfer import StyleTransfer, TransferConfig
+        from src.style_transfer.transfer import StyleTransfer, TransferConfig
         from src.services import Services
 
         services = Services()
@@ -272,10 +272,10 @@ class TestStyleTransfer:
         )
         assert transfer.services is services
 
-    @patch('src.generation.transfer.create_style_generator')
+    @patch('src.style_transfer.transfer.create_style_generator')
     def test_get_partial_results(self, mock_generator_class, mock_critic):
         """Test getting partial results after interruption."""
-        from src.generation.transfer import StyleTransfer, TransferConfig
+        from src.style_transfer.transfer import StyleTransfer, TransferConfig
 
         config = TransferConfig(verify_semantic_fidelity=False)
         transfer = StyleTransfer(
@@ -316,13 +316,13 @@ class TestStyleTransferNestedDIPropagation:
         critic.provider_name = "mock"
         return critic
 
-    @patch('src.generation.transfer.create_style_generator')
+    @patch('src.style_transfer.transfer.create_style_generator')
     def test_structural_rag_uses_injected_services(
         self, mock_generator_class, mock_critic
     ):
         """StructuralRAG collaborator reads analyzers from the injected
         Services, not the process-wide default."""
-        from src.generation.transfer import StyleTransfer, TransferConfig
+        from src.style_transfer.transfer import StyleTransfer, TransferConfig
         from src.services import Services
         from src.rag import structural_rag as sr_module
 
@@ -364,13 +364,13 @@ class TestStyleTransferNestedDIPropagation:
             "services' indexer, not the process-wide default"
         )
 
-    @patch('src.generation.transfer.create_style_generator')
+    @patch('src.style_transfer.transfer.create_style_generator')
     def test_structural_grafter_uses_injected_services(
         self, mock_generator_class, mock_critic
     ):
         """StructuralGrafter collaborator reads its indexer from the injected
         Services, not the process-wide default."""
-        from src.generation.transfer import StyleTransfer, TransferConfig
+        from src.style_transfer.transfer import StyleTransfer, TransferConfig
         from src.services import Services
         from src.rag import structural_grafter as sg_module
 
@@ -399,14 +399,14 @@ class TestStyleTransferNestedDIPropagation:
             "Services container, not the process-wide default"
         )
 
-    @patch('src.generation.transfer.create_style_generator')
+    @patch('src.style_transfer.transfer.create_style_generator')
     def test_cached_rag_isolated_per_services_container(
         self, mock_generator_class, mock_critic
     ):
         """Two StyleTransfer instances built for the same author but with
         DIFFERENT Services containers must get DIFFERENT StructuralRAGs.
         Otherwise the first container's collaborators leak into the second."""
-        from src.generation.transfer import StyleTransfer, TransferConfig
+        from src.style_transfer.transfer import StyleTransfer, TransferConfig
         from src.services import Services
         from src.rag import structural_rag as sr_module
 
@@ -469,10 +469,10 @@ class TestStyleTransferNestedDIPropagation:
 class TestDocumentTransfer:
     """Tests for full document transfer."""
 
-    @patch('src.generation.transfer.create_style_generator')
+    @patch('src.style_transfer.transfer.create_style_generator')
     def test_transfer_document_basic(self, mock_generator_class):
         """Test basic document transfer with mocked paragraph transfer."""
-        from src.generation.transfer import StyleTransfer, TransferConfig
+        from src.style_transfer.transfer import StyleTransfer, TransferConfig
 
         mock_generator = MagicMock()
         mock_generator_class.return_value = mock_generator
@@ -503,10 +503,10 @@ class TestDocumentTransfer:
         assert len(output) > 0
         assert "Styled output" in output
 
-    @patch('src.generation.transfer.create_style_generator')
+    @patch('src.style_transfer.transfer.create_style_generator')
     def test_transfer_document_preserves_headings(self, mock_generator_class):
         """Test that headings are passed through unchanged."""
-        from src.generation.transfer import StyleTransfer, TransferConfig
+        from src.style_transfer.transfer import StyleTransfer, TransferConfig
 
         mock_generator = MagicMock()
         mock_generator.generate.return_value = "Styled content."
@@ -536,10 +536,10 @@ class TestDocumentTransfer:
         # Heading should be preserved
         assert "# Heading" in output
 
-    @patch('src.generation.transfer.create_style_generator')
+    @patch('src.style_transfer.transfer.create_style_generator')
     def test_transfer_document_callback(self, mock_generator_class):
         """Test that progress callback is called."""
-        from src.generation.transfer import StyleTransfer, TransferConfig
+        from src.style_transfer.transfer import StyleTransfer, TransferConfig
 
         mock_generator = MagicMock()
         mock_generator.generate.return_value = "Output."
@@ -584,10 +584,10 @@ class TestDocumentTransfer:
 class TestWordCountTracking:
     """Tests for word count updates after perspective conversion and RTT."""
 
-    @patch('src.generation.transfer.create_style_generator')
+    @patch('src.style_transfer.transfer.create_style_generator')
     def test_word_count_updated_after_perspective_conversion(self, mock_generator_class):
         """target_words should reflect post-perspective-conversion word count."""
-        from src.generation.transfer import StyleTransfer, TransferConfig
+        from src.style_transfer.transfer import StyleTransfer, TransferConfig
 
         mock_generator = MagicMock()
         mock_generator.generate.return_value = "Styled output text from the generator model."
@@ -629,10 +629,10 @@ class TestWordCountTracking:
             f"target_words={target_words} should be {expected_target} (post-perspective count)"
         )
 
-    @patch('src.generation.transfer.create_style_generator')
+    @patch('src.style_transfer.transfer.create_style_generator')
     def test_word_count_updated_after_rtt(self, mock_generator_class):
         """target_words should reflect post-RTT word count."""
-        from src.generation.transfer import StyleTransfer, TransferConfig
+        from src.style_transfer.transfer import StyleTransfer, TransferConfig
 
         mock_generator = MagicMock()
         mock_generator.generate.return_value = "Styled output text from the generator model."
@@ -673,10 +673,10 @@ class TestWordCountTracking:
             f"target_words={target_words} should be {expected_target} (post-RTT count)"
         )
 
-    @patch('src.generation.transfer.create_style_generator')
+    @patch('src.style_transfer.transfer.create_style_generator')
     def test_word_count_not_updated_after_perturbation(self, mock_generator_class):
         """target_words should NOT change after perturbation (intentional drops)."""
-        from src.generation.transfer import StyleTransfer, TransferConfig
+        from src.style_transfer.transfer import StyleTransfer, TransferConfig
 
         mock_generator = MagicMock()
         mock_generator.generate.return_value = "Styled output text from the generator model."
@@ -724,10 +724,10 @@ class TestWordCountTracking:
 class TestCleanedIndexValueError:
     """Tests for _cleanup_document_paragraphs not raising ValueError on mutated paragraphs."""
 
-    @patch('src.generation.transfer.create_style_generator')
+    @patch('src.style_transfer.transfer.create_style_generator')
     def test_duplicate_para_after_mutation_no_crash(self, mock_generator_class):
         """When a paragraph is mutated after being stored, index lookup should not crash."""
-        from src.generation.transfer import StyleTransfer, TransferConfig
+        from src.style_transfer.transfer import StyleTransfer, TransferConfig
 
         mock_generator = MagicMock()
         mock_generator_class.return_value = mock_generator
@@ -756,10 +756,10 @@ class TestIdentityCheckVariable:
     """Bug: Identity check compares LoRA output against paragraph_clean (pre-RTT)
     instead of content_for_generation (what LoRA actually received)."""
 
-    @patch('src.generation.transfer.create_style_generator')
+    @patch('src.style_transfer.transfer.create_style_generator')
     def test_identity_check_uses_content_for_generation(self, mock_generator_class):
         """Identity check should compare against RTT-neutralized content, not original."""
-        from src.generation.transfer import StyleTransfer, TransferConfig
+        from src.style_transfer.transfer import StyleTransfer, TransferConfig
         import inspect
 
         # Verify the source code compares against content_for_generation
@@ -780,7 +780,7 @@ class TestReferenceMarkerWordCount:
     def test_word_count_excludes_references(self):
         """Initial word_count should be based on cleaned text, not raw paragraph."""
         import inspect
-        from src.generation.transfer import StyleTransfer
+        from src.style_transfer.transfer import StyleTransfer
 
         source = inspect.getsource(StyleTransfer.transfer_paragraph)
         # After extract_references, word_count should use paragraph_clean
@@ -800,7 +800,7 @@ class TestReferenceMarkerWordCount:
     def test_expansion_ratio_excludes_references(self):
         """source_words for expansion check should exclude reference markers."""
         import inspect
-        from src.generation.transfer import StyleTransfer
+        from src.style_transfer.transfer import StyleTransfer
 
         source = inspect.getsource(StyleTransfer.transfer_paragraph)
         # The expansion ratio check should use paragraph_clean, not paragraph
@@ -814,7 +814,7 @@ class TestDeadCodeLoraInputWords:
     def test_no_lora_input_words_in_source(self):
         """transfer_paragraph should not compute unused lora_input_words."""
         import inspect
-        from src.generation.transfer import StyleTransfer
+        from src.style_transfer.transfer import StyleTransfer
 
         source = inspect.getsource(StyleTransfer.transfer_paragraph)
         assert "lora_input_words" not in source, (
@@ -826,11 +826,11 @@ class TestPersonaStartupValidation:
     """A typo in config.worldview should fail fast at StyleTransfer init, not
     mid-document when the first paragraph tries to load the persona file."""
 
-    @patch('src.generation.transfer.create_style_generator')
+    @patch('src.style_transfer.transfer.create_style_generator')
     def test_init_raises_on_missing_persona_file(self, mock_generator_class, tmp_path):
         """StyleTransfer.__init__ should raise FileNotFoundError when worldview
         points to a missing file and use_persona is True."""
-        from src.generation.transfer import StyleTransfer, TransferConfig
+        from src.style_transfer.transfer import StyleTransfer, TransferConfig
         from src.persona.prompt_builder import _load_persona_file
 
         _load_persona_file.cache_clear()
@@ -852,13 +852,13 @@ class TestPersonaStartupValidation:
                     config=config,
                 )
 
-    @patch('src.generation.transfer.create_style_generator')
+    @patch('src.style_transfer.transfer.create_style_generator')
     def test_init_skips_persona_validation_when_use_persona_false(
         self, mock_generator_class, tmp_path
     ):
         """When use_persona is False, init should succeed even if the worldview
         file would be missing — the persona path is never taken."""
-        from src.generation.transfer import StyleTransfer, TransferConfig
+        from src.style_transfer.transfer import StyleTransfer, TransferConfig
         from src.persona.prompt_builder import _load_persona_file
 
         _load_persona_file.cache_clear()
@@ -886,7 +886,7 @@ class TestCleanPunctuationAbbreviations:
 
     def test_abbreviations_preserved(self):
         """Abbreviations like U.S. should not get spaces inserted."""
-        from src.generation.transfer import StyleTransfer, TransferConfig
+        from src.style_transfer.transfer import StyleTransfer, TransferConfig
 
         st = StyleTransfer.__new__(StyleTransfer)
         result = st._clean_punctuation_artifacts("The U.S. economy grew.")
@@ -894,7 +894,7 @@ class TestCleanPunctuationAbbreviations:
 
     def test_normal_missing_space_still_fixed(self):
         """Normal missing spaces after punctuation should still be fixed."""
-        from src.generation.transfer import StyleTransfer, TransferConfig
+        from src.style_transfer.transfer import StyleTransfer, TransferConfig
 
         st = StyleTransfer.__new__(StyleTransfer)
         result = st._clean_punctuation_artifacts("The cat sat.The dog ran.")

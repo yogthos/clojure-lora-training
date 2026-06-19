@@ -280,8 +280,8 @@ def transfer_file(
         fused_models: List of fused model paths to use directly (no adapter).
     """
     fused_models = fused_models or []
-    from src.generation.transfer import StyleTransfer, TransferConfig
-    from src.generation.lora_generator import AdapterSpec
+    from src.style_transfer.transfer import StyleTransfer, TransferConfig
+    from src.style_transfer.lora_generator import AdapterSpec
     from src.config import load_config
     from src.llm.deepseek import DeepSeekProvider
 
@@ -324,6 +324,7 @@ def transfer_file(
 
     if app_config:
         gen = app_config.generation
+        pipeline = app_config.pipeline
         config = TransferConfig(
             temperature=temperature,
             verify_semantic_fidelity=verify,
@@ -332,14 +333,14 @@ def transfer_file(
             target_expansion_ratio=gen.target_expansion_ratio,
             expand_for_texture=expand_for_texture,
             expand_for_texture_explicit=expand_for_texture_explicit,
-            skip_neutralization=gen.skip_neutralization,
-            pass_headings_unchanged=gen.pass_headings_unchanged,
+            skip_neutralization=pipeline.skip_neutralization,
+            pass_headings_unchanged=pipeline.pass_headings_unchanged,
             min_paragraph_words=gen.min_paragraph_words,
-            use_structural_rag=gen.use_structural_rag,
-            use_structural_grafting=gen.use_structural_grafting,
-            rag_sample_size=gen.rag_sample_size,
-            apply_input_perturbation=gen.apply_input_perturbation,
-            use_persona=gen.use_persona,
+            use_structural_rag=pipeline.use_structural_rag,
+            use_structural_grafting=pipeline.use_structural_grafting,
+            rag_sample_size=pipeline.rag_sample_size,
+            apply_input_perturbation=pipeline.apply_input_perturbation,
+            use_persona=pipeline.use_persona,
         )
     else:
         config = TransferConfig(
@@ -646,7 +647,7 @@ def _resolve_transfer_targets(args):
         ``fused_model_config`` is the first enabled fused-model's config
         (for author fallback), or ``None``.
     """
-    from src.generation.lora_generator import AdapterSpec
+    from src.style_transfer.lora_generator import AdapterSpec
 
     adapters: list = []
     fused_models: list = []

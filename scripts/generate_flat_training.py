@@ -1031,7 +1031,7 @@ def get_rtt_neutralizer(provider: str = None, batch_size: int = None):
     global _rtt_neutralizer, _rtt_lock
     if _rtt_neutralizer is None:
         import threading
-        from src.llm.mlx_provider import create_rtt_neutralizer
+        from src.llm.rtt_neutralizer import create_rtt_neutralizer
         _rtt_neutralizer = create_rtt_neutralizer(provider=provider, batch_size=batch_size)
         _rtt_lock = threading.Lock()
         logger.info(f"RTT neutralizer ready: {type(_rtt_neutralizer).__name__}")
@@ -1094,7 +1094,7 @@ def neutralize_batch(texts: list, monotone: bool = True, on_progress=None) -> li
     Returns:
         List of neutralized texts (None for failures).
     """
-    from src.llm.mlx_provider import DeepSeekRTTNeutralizer
+    from src.llm.rtt_neutralizer import DeepSeekRTTNeutralizer
 
     neutralizer, lock = get_rtt_neutralizer()
 

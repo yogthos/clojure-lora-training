@@ -231,10 +231,10 @@ class TestLLMConfig:
 class TestDefaultValueMatches:
     """Tests for default value consistency."""
 
-    def test_generation_config_rag_sample_size(self):
-        """GenerationConfig rag_sample_size should match config.json default."""
-        from src.config import GenerationConfig
-        assert GenerationConfig().rag_sample_size == 300
+    def test_pipeline_config_rag_sample_size(self):
+        """PipelineConfig rag_sample_size should match config.json default."""
+        from src.config import PipelineConfig
+        assert PipelineConfig().rag_sample_size == 300
 
 
 class TestParserFallbackDefaults:
@@ -251,7 +251,7 @@ class TestParserFallbackDefaults:
             f.flush()
             try:
                 config = load_config(f.name)
-                assert config.generation.rag_sample_size == 300
+                assert config.pipeline.rag_sample_size == 300
             finally:
                 os.unlink(f.name)
 
@@ -446,17 +446,17 @@ class TestConfigFieldsForwarded:
 
     def test_apply_input_perturbation_forwarded(self):
         """apply_input_perturbation from config should reach TransferConfig."""
-        from src.config import GenerationConfig
+        from src.config import PipelineConfig
 
-        gen = GenerationConfig(apply_input_perturbation=False)
+        pipeline = PipelineConfig(apply_input_perturbation=False)
         # Check the field exists and is set correctly
-        assert gen.apply_input_perturbation is False
+        assert pipeline.apply_input_perturbation is False
 
     def test_rag_sample_size_forwarded(self):
         """rag_sample_size from config should reach TransferConfig."""
-        from src.config import GenerationConfig
+        from src.config import PipelineConfig
 
-        gen = GenerationConfig(rag_sample_size=500)
-        assert gen.rag_sample_size == 500
+        pipeline = PipelineConfig(rag_sample_size=500)
+        assert pipeline.rag_sample_size == 500
 
 

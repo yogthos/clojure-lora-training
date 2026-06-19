@@ -1,12 +1,12 @@
 """Tests for synthetic data generation: gen_question.py"""
 
 import pytest
-from src.synthetic.construct_tree import (
+from src.codeflow.synthetic.construct_tree import (
     build_baseline_tree,
     assign_features_to_tree,
     FeatureTreeNode,
 )
-from src.synthetic.gen_question import (
+from src.codeflow.synthetic.gen_question import (
     GeneratedTask,
     _build_task_prompt,
     _generate_fallback_tasks,

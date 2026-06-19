@@ -39,40 +39,40 @@ from collections import Counter
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.llm.provider import LLMProvider
-from src.synthetic.extract_features import (
+from src.codeflow.synthetic.extract_features import (
     collect_clojure_files,
     extract_features_from_repo,
     ClojureFeature,
 )
-from src.synthetic.construct_tree import (
+from src.codeflow.synthetic.construct_tree import (
     build_baseline_tree,
     assign_features_to_tree,
     FeatureTree,
     tree_to_json,
     tree_from_json,
 )
-from src.synthetic.feature_evol import (
+from src.codeflow.synthetic.feature_evol import (
     evolve_tree,
     merge_evolved_trees,
     EvolConfig,
 )
-from src.synthetic.gen_question import (
+from src.codeflow.synthetic.gen_question import (
     generate_tasks_from_tree,
     GeneratedTask,
     format_task_for_training,
 )
-from src.synthetic.gen_code import (
+from src.codeflow.synthetic.gen_code import (
     generate_training_examples,
     CodeGenResult,
     validate_solution,
 )
-from src.synthetic.cluster import (
+from src.codeflow.synthetic.cluster import (
     select_coreset,
     select_by_feature_diversity,
     kcenter_greedy,
     embed_examples,
 )
-from src.synthetic.file_utils import (
+from src.codeflow.synthetic.file_utils import (
     merge_jsonl,
     deduplicate_jsonl,
     shuffle_jsonl,

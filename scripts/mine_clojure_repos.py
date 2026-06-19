@@ -42,8 +42,8 @@ from collections import Counter
 # Ensure project root is on sys.path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.git_mining.miner import mine_repository, MinedExample
-from src.git_mining.pattern_classifier import classify_diff
+from src.codeflow.git_mining.miner import mine_repository, MinedExample
+from src.codeflow.git_mining.pattern_classifier import classify_diff
 
 
 def parse_args() -> argparse.Namespace:

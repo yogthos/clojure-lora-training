@@ -22,13 +22,14 @@ if TYPE_CHECKING:
 from .lora_generator import AdapterSpec
 from .base_generator import GenerationConfig
 from .factory import create_style_generator
+from .transfer_steps import _TransferSteps
+from .transfer_postprocess import _TransferPostProcess
 from ..config import ModelConfig, get_adapter_config, get_fused_model_config
 from ..utils.nlp import (
     split_into_paragraphs,
     split_into_sentences,
     is_heading,
 )
-from ..utils.prompts import load_prompt
 from ..utils.logging import get_logger
 
 # Optional Structural RAG import
@@ -203,7 +204,7 @@ class TransferStats:
         }
 
 
-class StyleTransfer:
+class StyleTransfer(_TransferSteps, _TransferPostProcess):
     """Style transfer using LoRA with RTT neutralization.
 
     This is the main entry point for style transfer. Pipeline:
@@ -409,188 +410,6 @@ class StyleTransfer:
                         "Structural Grafter not available (missing dependencies)"
                     )
                     self.config.use_structural_grafting = False
-
-    def _rtt_neutralize(self, text: str, max_retries: int = 2) -> Optional[str]:
-        """Round-Trip Translation neutralization via Mandarin pivot.
-
-        This matches the training data generation process:
-        Step 1 (Scrub): English → Mandarin (HSK3 vocabulary)
-        Step 2 (Rinse): Mandarin → Plain English
-
-        Uses provider from config.json under llm.provider.rtt.
-        Options: 'mlx' (local), 'deepseek' (API).
-
-        Args:
-            text: Input text to neutralize.
-            max_retries: Number of retry attempts.
-
-        Returns:
-            Neutralized text, or None if failed.
-        """
-        # Lazy-load the RTT neutralizer using factory function
-        if self._rtt_neutralizer is None:
-            try:
-                from ..llm.mlx_provider import create_rtt_neutralizer
-
-                self._rtt_neutralizer = create_rtt_neutralizer()
-                logger.debug(f"RTT neutralizer: {type(self._rtt_neutralizer).__name__}")
-            except Exception as e:
-                logger.error(f"Failed to initialize RTT neutralizer: {e}")
-                return None
-
-        return self._rtt_neutralizer.neutralize(text, max_retries=max_retries)
-
-    def _expand_with_texture(self, text: str) -> str:
-        """Expand text with texture using the critic model.
-
-        Adds asides, observations, parenthetical thoughts, and sensory details
-        to enrich flat prose before style transfer.
-
-        Args:
-            text: Input text to expand.
-
-        Returns:
-            Expanded text with added texture, or original text if expansion fails.
-        """
-        try:
-            system_prompt = load_prompt("expand_texture")
-            user_prompt = text
-
-            response = self.critic_provider.call(
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                temperature=0.7,  # Some creativity for texture
-                max_tokens=len(text.split()) * 3,  # Allow ~2x expansion headroom
-            )
-
-            input_words = len(text.split())
-            output_words = len(response.split()) if response else 0
-            logger.info(
-                f"TEXTURE EXPANSION result: {input_words} → {output_words} words"
-            )
-
-            if response and output_words > input_words:
-                expansion = output_words / input_words
-                logger.info(f"TEXTURE EXPANSION: expanded by {expansion:.0%}")
-                return response.strip()
-            else:
-                logger.warning(
-                    f"Texture expansion returned shorter/equal text ({output_words} vs {input_words}), using original"
-                )
-                return text
-
-        except Exception as e:
-            logger.warning(f"Texture expansion failed: {e}")
-            return text
-
-    def _narrativize(self, text: str) -> str:
-        """Convert impersonal exposition to first-person narrative.
-
-        CRITICAL FOR LORA QUALITY:
-        The LoRA was trained on first-person narrative inputs ("I saw", "I found",
-        "I discovered"). But RTT neutralization produces impersonal exposition
-        ("We trace", "One observes", "It is known that").
-
-        This step bridges that gap by converting input to match training format:
-        - "We now trace the forces..." → "I have traced the forces..."
-        - "One must understand..." → "I came to understand..."
-        - "It is observed that..." → "I observed..."
-
-        Args:
-            text: Impersonal exposition text.
-
-        Returns:
-            First-person narrative version, or original text if conversion fails.
-        """
-        try:
-            system_prompt = load_prompt("narrativize")
-            user_prompt = text
-
-            response = self.critic_provider.call(
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                temperature=0.5,  # Some variation but controlled
-                max_tokens=len(text.split()) * 2,  # Allow for slight expansion
-            )
-
-            if response and response.strip():
-                input_words = len(text.split())
-                output_words = len(response.split())
-                logger.info(
-                    f"NARRATIVIZE: {input_words} → {output_words} words (converted to first-person)"
-                )
-                return response.strip()
-            else:
-                logger.warning("Narrativization returned empty, using original")
-                return text
-
-        except Exception as e:
-            logger.warning(f"Narrativization failed: {e}")
-            return text
-
-    def _convert_to_perspective(self, text: str, target_perspective: str) -> str:
-        """Convert text to target perspective BEFORE RTT neutralization.
-
-        CRITICAL: This must happen BEFORE RTT because the LoRA was trained on
-        perspective-varied text that went through RTT. The training pairs are:
-            neutral(third_person) → styled(third_person)
-
-        So the perspective is embedded in the text BEFORE RTT, and the LoRA
-        preserves it during styling.
-
-        Args:
-            text: Input text in any perspective.
-            target_perspective: Target perspective from config.
-
-        Returns:
-            Text converted to target perspective.
-        """
-        # "preserve" means don't convert - keep original perspective
-        if target_perspective == "preserve":
-            return text
-
-        # "first_person_singular" uses the existing narrativize prompt
-        if target_perspective == "first_person_singular":
-            return self._narrativize(text)
-
-        try:
-            # Build the perspective description
-            perspective_descriptions = {
-                "first_person_plural": "first_person_plural (use: we, us, our, ours)",
-                "third_person": "third_person (use: the observer, they, one)",
-                "author_voice_third_person": "author_voice_third_person (impersonal exposition: one observes, it is known, passive voice)",
-            }
-            perspective_desc = perspective_descriptions.get(
-                target_perspective, target_perspective
-            )
-
-            system_prompt = load_prompt("convert_perspective").format(
-                target_perspective=perspective_desc
-            )
-            user_prompt = text
-
-            response = self.critic_provider.call(
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                temperature=0.3,  # Low temperature for precise conversion
-                max_tokens=len(text.split()) * 2,
-            )
-
-            if response and response.strip():
-                input_words = len(text.split())
-                output_words = len(response.split())
-                logger.info(
-                    f"PERSPECTIVE CONVERSION: {input_words} → {output_words} words "
-                    f"(converted to {target_perspective})"
-                )
-                return response.strip()
-            else:
-                logger.warning("Perspective conversion returned empty, using original")
-                return text
-
-        except Exception as e:
-            logger.warning(f"Perspective conversion failed: {e}")
-            return text
 
     @_with_self_services
     def transfer_paragraph(
@@ -855,110 +674,6 @@ class StyleTransfer:
 
         logger.info(f"FINAL OUTPUT: {len(output.split())} words")
         return output, score
-
-    def _check_content_overlap(self, input_text: str, output_text: str) -> float:
-        """Check content word overlap between input and output.
-
-        Returns ratio of input content words found in output.
-        Low overlap suggests memorized/hallucinated output.
-        """
-        nlp = self.services.nlp
-
-        def get_content_words(text: str) -> set:
-            """Extract lemmatized content words using spaCy."""
-            doc = nlp(text)
-            words = set()
-            for token in doc:
-                # Skip stopwords, punctuation, and short words
-                if not token.is_stop and not token.is_punct and len(token.lemma_) >= 4:
-                    words.add(token.lemma_.lower())
-            return words
-
-        input_words = get_content_words(input_text)
-        output_words = get_content_words(output_text)
-
-        if not input_words:
-            return 1.0  # No content words to check
-
-        overlap = len(input_words & output_words)
-        return overlap / len(input_words)
-
-    def _clean_punctuation_artifacts(self, text: str) -> str:
-        """Clean up punctuation artifacts from LoRA output and post-processing.
-
-        Fixes common issues like:
-        - "—," or ",—" (em-dash combined with comma)
-        - ".—" or "—." (em-dash combined with period)
-        - Double punctuation
-        """
-        # Fix em-dash + punctuation combinations
-        text = re.sub(r"—\s*,", ",", text)  # "—," -> ","
-        text = re.sub(r",\s*—", ",", text)  # ",—" -> ","
-        text = re.sub(r"—\s*\.", ".", text)  # "—." -> "."
-        text = re.sub(r"\.\s*—", ".", text)  # ".—" -> "."
-        text = re.sub(r"—\s*;", ";", text)  # "—;" -> ";"
-        text = re.sub(r";\s*—", ";", text)  # ";—" -> ";"
-        text = re.sub(r"—\s*:", ":", text)  # "—:" -> ":"
-        text = re.sub(r":\s*—", ":", text)  # ":—" -> ":"
-
-        # Fix double punctuation
-        text = re.sub(r",\s*,", ",", text)
-        text = re.sub(r"\.\s*\.", ".", text)
-        text = re.sub(r";\s*;", ";", text)
-        text = re.sub(r":\s*:", ":", text)
-
-        # Fix spacing around punctuation
-        text = re.sub(r"\s+([.,;:!?])", r"\1", text)  # No space before
-        # Space after punctuation, but not between single uppercase letters (abbreviations like U.S.)
-        text = re.sub(r"([.,;:!?])(?!(?<=[A-Z]\.)[A-Z])([A-Za-z])", r"\1 \2", text)
-
-        # Normalize multiple spaces
-        text = re.sub(r"\s+", " ", text)
-
-        return text.strip()
-
-    def _ensure_complete_ending(self, text: str) -> str:
-        """Ensure text ends with a complete sentence.
-
-        If text ends mid-sentence, remove the incomplete part.
-        """
-        # First clean punctuation artifacts
-        text = self._clean_punctuation_artifacts(text)
-
-        text = text.strip()
-        if not text:
-            return text
-
-        # If already ends with sentence terminator, we're good
-        if text[-1] in ".!?":
-            return text
-
-        # Find the last complete sentence
-        sentences = split_into_sentences(text)
-        if not sentences:
-            return text
-
-        # Check if last sentence is complete (ends with punctuation)
-        complete_sentences = []
-        for sent in sentences:
-            sent = sent.strip()
-            if sent and sent[-1] in ".!?":
-                complete_sentences.append(sent)
-            elif sent and len(sent) > 20:
-                # Long fragment - try to salvage by adding period
-                # Only if it looks like a complete thought
-                words = sent.split()
-                if len(words) >= 5:
-                    complete_sentences.append(sent + ".")
-                    logger.warning(
-                        f"Added period to incomplete sentence: ...{sent[-30:]}"
-                    )
-
-        if complete_sentences:
-            return " ".join(complete_sentences)
-
-        # Fallback: add period to entire text
-        return text + "."
 
     @_with_self_services
     def transfer_document(

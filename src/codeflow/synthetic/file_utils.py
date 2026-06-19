@@ -36,26 +36,9 @@ def sort_jsonl(
     if output_path is None:
         output_path = str(Path(input_path).with_suffix(".sorted.jsonl"))
 
-    # Read all records
-    records = []
-    with open(input_path, "r") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                record = json.loads(line)
-                records.append(record)
-            except json.JSONDecodeError:
-                continue
-
-    # Sort by key
+    records = read_jsonl(input_path)
     records.sort(key=lambda r: r.get(sort_key, ""))
-
-    # Write sorted
-    with open(output_path, "w") as f:
-        for record in records:
-            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    write_jsonl(records, output_path)
 
     return output_path
 
@@ -124,23 +107,12 @@ def shuffle_jsonl(
     if output_path is None:
         output_path = str(Path(input_path).with_suffix(".shuffled.jsonl"))
 
-    records = []
-    with open(input_path, "r") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                records.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
+    records = read_jsonl(input_path)
 
     rng = random.Random(seed)
     rng.shuffle(records)
 
-    with open(output_path, "w") as f:
-        for record in records:
-            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    write_jsonl(records, output_path)
 
     return output_path
 
@@ -164,39 +136,16 @@ def deduplicate_jsonl(
         output_path = str(Path(input_path).with_suffix(".dedup.jsonl"))
 
     seen: Set[str] = set()
-    kept = 0
-    skipped = 0
-
-    with open(output_path, "w") as out:
-        with open(input_path, "r") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    record = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-
-                sig = _record_signature(record, dedup_key)
-                if sig in seen:
-                    skipped += 1
-                    continue
-                seen.add(sig)
-                out.write(json.dumps(record, ensure_ascii=False) + "\n")
-                kept += 1
+    kept = []
+    for record in read_jsonl(input_path):
+        sig = _record_signature(record, dedup_key)
+        if sig in seen:
+            continue
+        seen.add(sig)
+        kept.append(record)
+    write_jsonl(kept, output_path)
 
     return output_path
-
-
-def count_records(path: str) -> int:
-    """Count records in a JSONL file."""
-    count = 0
-    with open(path, "r") as f:
-        for line in f:
-            if line.strip():
-                count += 1
-    return count
 
 
 def split_jsonl(
@@ -246,9 +195,9 @@ def split_jsonl(
     return train_path, val_path
 
 
-from ..shared import count_records  # noqa: F401 — re-exported for backward compat
-from ..shared import load_jsonl as read_jsonl
-from ..shared import write_jsonl
+from ...shared import count_records  # noqa: F401 — re-exported for backward compat
+from ...shared import load_jsonl as read_jsonl
+from ...shared import write_jsonl
 
 
 def _record_signature(record: dict, key: str = "instruction") -> str:

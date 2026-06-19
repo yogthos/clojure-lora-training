@@ -91,7 +91,7 @@ def get_rtt_neutralizer():
     if _rtt_neutralizer is None:
         import sys
         sys.path.insert(0, str(Path(__file__).parent.parent))
-        from src.llm.mlx_provider import RTTNeutralizer
+        from src.llm.rtt_neutralizer import RTTNeutralizer
         print("Initializing RTT neutralizer (local MLX model)...")
         _rtt_neutralizer = RTTNeutralizer()
         print("RTT neutralizer ready")

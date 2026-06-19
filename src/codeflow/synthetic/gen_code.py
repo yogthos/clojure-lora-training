@@ -21,7 +21,7 @@ import random
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
-from ..llm.provider import LLMProvider
+from ...llm.provider import LLMProvider
 
 
 # System prompt for the analysis pass
@@ -38,7 +38,7 @@ class CodeGenResult:
 
     def to_training_example(self) -> dict:
         """Convert to LLaMA-Factory training format."""
-        from ..shared import _SYSTEM_PROMPT
+        from ...shared import _SYSTEM_PROMPT
         return {
             "system": _SYSTEM_PROMPT,
             "instruction": self.instruction,

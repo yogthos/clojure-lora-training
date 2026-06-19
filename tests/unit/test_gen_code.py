@@ -2,7 +2,7 @@
 
 import json
 import pytest
-from src.synthetic.gen_code import (
+from src.codeflow.synthetic.gen_code import (
     CodeGenResult,
     generate_analysis,
     generate_code,
