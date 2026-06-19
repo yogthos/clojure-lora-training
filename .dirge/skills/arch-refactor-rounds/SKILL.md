@@ -31,12 +31,12 @@ Later rounds:
 
 After each task:
 ```bash
-python -c "from changed.module import key_symbol; print('OK')"
+uv run python -c "from changed.module import key_symbol; print('OK')"
 ```
 
 After each round:
 ```bash
-python -c "
+uv run python -c "
 import module1; print('OK')
 import module2; print('OK')
 ...
@@ -45,8 +45,20 @@ import module2; print('OK')
 
 Then run relevant tests:
 ```bash
-python -m pytest tests/unit/test_changed_modules*.py -x -q --tb=short
+uv run python -m pytest tests/unit/test_changed_modules*.py -x -q --tb=short
 ```
+
+**Session-end gate (non-negotiable):** before declaring the refactor done, run the FULL unit suite — not just changed modules — and require zero failures:
+```bash
+uv run python -m pytest tests/unit/ -x -q --tb=short \
+  --ignore=tests/unit/test_content_classifier.py --ignore=tests/unit/test_transfer.py
+```
+Per-round targeted tests catch regressions early; the full suite at the end is the hard gate. The `--ignore`s drop the spaCy-dependent tests (see Pitfalls).
+
+## Pitfalls
+
+- `git push origin main` may require human approval via the approval_provider. If blocked, tell the user explicitly and do not consider the session complete.
+- Tests in `test_content_classifier.py` and `test_transfer.py` require spaCy (`en_core_web_sm`). When spaCy isn't installed, skip those with `--ignore=tests/unit/test_content_classifier.py --ignore=tests/unit/test_transfer.py`.
 
 ## What NOT to do in early rounds
 

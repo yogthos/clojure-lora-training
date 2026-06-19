@@ -361,7 +361,7 @@ def run_phase1(chunks: list, author: str, output_dir: Path, monotone: bool = Tru
         workers: Number of concurrent workers for batch processing
         chunks_path: Path to chunks file (for printing next step)
     """
-    from src.llm.mlx_provider import create_rtt_neutralizer, DeepSeekRTTNeutralizer
+    from src.llm.rtt_neutralizer import create_rtt_neutralizer, DeepSeekRTTNeutralizer
 
     output_file = output_dir / "anchors.jsonl"
 

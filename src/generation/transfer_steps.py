@@ -43,7 +43,7 @@ class _TransferSteps:
         # Lazy-load the RTT neutralizer using factory function
         if self._rtt_neutralizer is None:
             try:
-                from ..llm.mlx_provider import create_rtt_neutralizer
+                from ..llm.rtt_neutralizer import create_rtt_neutralizer
 
                 self._rtt_neutralizer = create_rtt_neutralizer()
                 logger.debug(f"RTT neutralizer: {type(self._rtt_neutralizer).__name__}")
