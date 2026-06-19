@@ -94,6 +94,38 @@ def deduplicate(records: List[dict]) -> List[dict]:
     return result
 
 
+def _example_chars(record: dict) -> int:
+    """Total character length of the trainable fields of an example.
+
+    Counts instruction + input + output. The system prompt is a constant
+    preamble, so it is excluded — what matters here is the per-example payload
+    that has to fit inside the training context window.
+    """
+    return (
+        len(record.get("instruction", ""))
+        + len(record.get("input", ""))
+        + len(record.get("output", ""))
+    )
+
+
+def filter_by_length(
+    records: List[dict],
+    max_chars: Optional[int] = None,
+) -> List[dict]:
+    """Drop records whose instruction+input+output exceeds max_chars.
+
+    Git-mined examples embed full before-state files as input, so a few
+    multi-file commits balloon to hundreds of KB — far past any training
+    context window, where they would just be truncated. This removes them
+    before balancing so the cap operates on the trainable pool.
+
+    If max_chars is None, all records are kept.
+    """
+    if max_chars is None:
+        return records
+    return [r for r in records if _example_chars(r) <= max_chars]
+
+
 def balance_by_type(
     records: List[dict],
     max_per_type: Optional[int] = None,
@@ -136,6 +168,7 @@ def assemble_dataset(
     synth_paths: List[Path],
     output_path: Path,
     max_per_type: Optional[int] = None,
+    max_chars: Optional[int] = None,
 ) -> List[dict]:
     """Assemble a complete training dataset from git-mined and synthetic sources.
 
@@ -144,15 +177,18 @@ def assemble_dataset(
     2. Load all synthetic records
     3. Merge into one list
     4. Deduplicate (keep first occurrence — typically git-mined wins)
-    5. Balance by change type
-    6. Write to output_path as JSONL
-    7. Return the assembled records
+    5. Drop records too large for the training context window
+    6. Balance by change type
+    7. Write to output_path as JSONL
+    8. Return the assembled records
 
     Args:
         git_paths: Directories or files containing git-mined JSONL data.
         synth_paths: Directories or files containing synthetic JSONL data.
         output_path: Where to write the merged JSONL.
         max_per_type: Max records per change type for balancing.
+        max_chars: Drop records whose instruction+input+output exceeds this
+            many characters (None disables the filter).
 
     Returns:
         List of assembled records.
@@ -166,6 +202,7 @@ def assemble_dataset(
         records.extend(load_jsonl(p))
 
     records = deduplicate(records)
+    records = filter_by_length(records, max_chars=max_chars)
     records = balance_by_type(records, max_per_type=max_per_type)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)

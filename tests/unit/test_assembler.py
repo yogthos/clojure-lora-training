@@ -11,6 +11,7 @@ from src.codeflow.assembly.assembler import (
     classify_example,
     deduplicate,
     balance_by_type,
+    filter_by_length,
     assemble_dataset,
 )
 
@@ -141,6 +142,38 @@ class TestBalanceByType:
         assert len(result) == len(recs)  # default max computed from smallest type
 
 
+class TestFilterByLength:
+    def test_drops_oversize_records(self):
+        recs = [
+            {"instruction": "small", "input": "x" * 10, "output": "y" * 10},
+            {"instruction": "huge", "input": "x" * 5000, "output": "y" * 5000},
+        ]
+        result = filter_by_length(recs, max_chars=1000)
+        assert len(result) == 1
+        assert result[0]["instruction"] == "small"
+
+    def test_none_keeps_all(self):
+        recs = [
+            {"instruction": "a", "input": "x" * 100000, "output": "y"},
+            {"instruction": "b", "input": "z", "output": "w"},
+        ]
+        assert len(filter_by_length(recs, max_chars=None)) == 2
+
+    def test_measures_combined_fields(self):
+        # input alone is under the cap, but input+output together exceed it
+        rec = {"instruction": "i", "input": "x" * 600, "output": "y" * 600}
+        assert filter_by_length([rec], max_chars=1000) == []
+        assert filter_by_length([rec], max_chars=2000) == [rec]
+
+    def test_boundary_is_inclusive(self):
+        # exactly at the cap is kept
+        rec = {"instruction": "", "input": "x" * 500, "output": "y" * 500}
+        assert filter_by_length([rec], max_chars=1000) == [rec]
+
+    def test_empty_input(self):
+        assert filter_by_length([], max_chars=1000) == []
+
+
 class TestAssembleDataset:
     def test_merges_and_deduplicates(self):
         with TemporaryDirectory() as d:
@@ -165,6 +198,30 @@ class TestAssembleDataset:
                 output_path=output,
             )
             assert len(result) == 2
+
+    def test_drops_oversize_before_balancing(self):
+        with TemporaryDirectory() as d:
+            dir_path = Path(d)
+            git_dir = dir_path / "git"
+            synth_dir = dir_path / "synth"
+            git_dir.mkdir()
+            synth_dir.mkdir()
+
+            _write_jsonl(git_dir / "out.jsonl", [
+                {"instruction": "fix small bug", "input": "x", "output": "diff1"},
+                {"instruction": "fix huge bug", "input": "x" * 9000, "output": "diff2"},
+            ])
+            _write_jsonl(synth_dir / "out.jsonl", [])
+
+            output = dir_path / "merged.jsonl"
+            result = assemble_dataset(
+                git_paths=[git_dir],
+                synth_paths=[synth_dir],
+                output_path=output,
+                max_chars=1000,
+            )
+            assert len(result) == 1
+            assert result[0]["instruction"] == "fix small bug"
 
     def test_handles_empty_inputs(self):
         with TemporaryDirectory() as d:
