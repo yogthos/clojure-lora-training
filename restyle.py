@@ -280,8 +280,8 @@ def transfer_file(
         fused_models: List of fused model paths to use directly (no adapter).
     """
     fused_models = fused_models or []
-    from src.generation.transfer import StyleTransfer, TransferConfig
-    from src.generation.lora_generator import AdapterSpec
+    from src.style_transfer.transfer import StyleTransfer, TransferConfig
+    from src.style_transfer.lora_generator import AdapterSpec
     from src.config import load_config
     from src.llm.deepseek import DeepSeekProvider
 
@@ -646,7 +646,7 @@ def _resolve_transfer_targets(args):
         ``fused_model_config`` is the first enabled fused-model's config
         (for author fallback), or ``None``.
     """
-    from src.generation.lora_generator import AdapterSpec
+    from src.style_transfer.lora_generator import AdapterSpec
 
     adapters: list = []
     fused_models: list = []

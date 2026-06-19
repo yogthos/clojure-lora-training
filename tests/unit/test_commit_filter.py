@@ -1,7 +1,7 @@
 """Tests for commit filtering logic."""
 
 import pytest
-from src.git_mining.commit_filter import (
+from src.codeflow.git_mining.commit_filter import (
     CommitInfo,
     filter_clojure_commits,
     is_clojure_file,

@@ -15,7 +15,7 @@ class TestFictionMarkers:
     def test_fiction_markers_loaded_from_config(self):
         """Fiction markers should not be hardcoded in _clean_response."""
         import inspect
-        from src.generation.base_generator import BaseStyleGenerator
+        from src.style_transfer.base_generator import BaseStyleGenerator
 
         source = inspect.getsource(BaseStyleGenerator._clean_response)
         # Should NOT contain Lovecraft-specific markers
@@ -29,7 +29,7 @@ class TestFictionMarkers:
 
     def test_clean_response_removes_configured_markers(self):
         """Sentences with configured fiction markers should be removed."""
-        from src.generation.base_generator import BaseStyleGenerator
+        from src.style_transfer.base_generator import BaseStyleGenerator
 
         # Create a minimal concrete subclass for testing
         class TestGenerator(BaseStyleGenerator):
@@ -50,7 +50,7 @@ class TestFictionMarkers:
 
     def test_clean_response_no_markers_preserves_all(self):
         """Empty markers list should preserve all sentences."""
-        from src.generation.base_generator import BaseStyleGenerator
+        from src.style_transfer.base_generator import BaseStyleGenerator
 
         class TestGenerator(BaseStyleGenerator):
             def generate(self, content, author, max_tokens=None, target_words=None,
@@ -74,7 +74,7 @@ class TestBrokenAtmosphericExceptionLogging:
 
     def test_exception_logged_not_swallowed(self):
         """When spaCy loading raises non-ImportError, a warning should be logged."""
-        from src.generation.base_generator import BaseStyleGenerator
+        from src.style_transfer.base_generator import BaseStyleGenerator
 
         class DummyGenerator(BaseStyleGenerator):
             def generate(self, content, author, **kwargs):
@@ -85,7 +85,7 @@ class TestBrokenAtmosphericExceptionLogging:
         gen = DummyGenerator()
 
         with patch('src.utils.nlp.get_nlp', side_effect=RuntimeError("spaCy memory error")):
-            with patch('src.generation.base_generator.logger') as mock_logger:
+            with patch('src.style_transfer.base_generator.logger') as mock_logger:
                 result = gen._fix_broken_atmospheric_phrases("Some test text.")
 
         assert result == "Some test text."
@@ -117,7 +117,7 @@ class TestFictionMarkerAllHallucinated:
 
     def test_all_sentences_hallucinated_returns_empty(self):
         """When all sentences are fiction hallucinations, response should be empty."""
-        from src.generation.base_generator import BaseStyleGenerator
+        from src.style_transfer.base_generator import BaseStyleGenerator
 
         class TestGenerator(BaseStyleGenerator):
             def generate(self, content, author, max_tokens=None, target_words=None,

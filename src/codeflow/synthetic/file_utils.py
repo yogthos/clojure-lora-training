@@ -246,9 +246,9 @@ def split_jsonl(
     return train_path, val_path
 
 
-from ..shared import count_records  # noqa: F401 — re-exported for backward compat
-from ..shared import load_jsonl as read_jsonl
-from ..shared import write_jsonl
+from ...shared import count_records  # noqa: F401 — re-exported for backward compat
+from ...shared import load_jsonl as read_jsonl
+from ...shared import write_jsonl
 
 
 def _record_signature(record: dict, key: str = "instruction") -> str:

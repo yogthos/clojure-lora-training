@@ -1,12 +1,12 @@
 """Tests for synthetic data generation: feature_evol.py"""
 
 import pytest
-from src.synthetic.construct_tree import (
+from src.codeflow.synthetic.construct_tree import (
     build_baseline_tree,
     assign_features_to_tree,
     FeatureTree,
 )
-from src.synthetic.feature_evol import (
+from src.codeflow.synthetic.feature_evol import (
     EvolConfig,
     evolve_breadth,
     evolve_depth,

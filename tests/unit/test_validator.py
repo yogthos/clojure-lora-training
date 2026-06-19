@@ -5,7 +5,7 @@ import pytest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from src.assembly.validator import (
+from src.codeflow.assembly.validator import (
     check_clojure_syntax,
     check_diff_structure,
     score_relevance,

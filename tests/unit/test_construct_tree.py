@@ -2,7 +2,7 @@
 
 import json
 import pytest
-from src.synthetic.construct_tree import (
+from src.codeflow.synthetic.construct_tree import (
     FeatureTreeNode,
     FeatureTree,
     build_baseline_tree,

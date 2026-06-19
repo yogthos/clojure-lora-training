@@ -18,9 +18,9 @@ import json
 import sys
 from pathlib import Path
 
-from src.assembly.assembler import assemble_dataset
-from src.assembly.formatter import format_jsonl_file
-from src.assembly.validator import validate_jsonl_file
+from src.codeflow.assembly.assembler import assemble_dataset
+from src.codeflow.assembly.formatter import format_jsonl_file
+from src.codeflow.assembly.validator import validate_jsonl_file
 
 
 def parse_args() -> argparse.Namespace:

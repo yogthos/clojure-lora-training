@@ -9,7 +9,7 @@ import readline
 from typing import Optional
 from dataclasses import dataclass
 
-from ..generation.transfer import StyleTransfer, TransferConfig
+from ..style_transfer.transfer import StyleTransfer, TransferConfig
 from ..utils.logging import get_logger
 
 logger = get_logger(__name__)

@@ -3,7 +3,7 @@
 import json
 import pytest
 from pathlib import Path
-from src.synthetic.file_utils import (
+from src.codeflow.synthetic.file_utils import (
     sort_jsonl,
     merge_jsonl,
     shuffle_jsonl,

@@ -209,7 +209,7 @@ class TestLoRAGenerator:
 
     def test_generation_config_defaults(self):
         """Test that generation config has recommended defaults."""
-        from src.generation.lora_generator import GenerationConfig
+        from src.style_transfer.lora_generator import GenerationConfig
 
         config = GenerationConfig()
 
@@ -240,7 +240,7 @@ class TestLoRAGenerator:
 
     def test_adapter_metadata_loading(self, tmp_path):
         """Test that adapter metadata is loaded correctly."""
-        from src.generation.lora_generator import AdapterMetadata
+        from src.style_transfer.lora_generator import AdapterMetadata
 
         # Create mock metadata
         metadata = {

@@ -9,7 +9,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from ..shared import compute_dedup_key, load_jsonl
+from ...shared import compute_dedup_key, load_jsonl
 
 # ── Classification keyword sets ──────────────────────────────────────────
 

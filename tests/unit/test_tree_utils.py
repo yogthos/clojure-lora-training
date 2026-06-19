@@ -1,12 +1,12 @@
 """Tests for synthetic data generation: tree_utils.py"""
 
 import pytest
-from src.synthetic.construct_tree import (
+from src.codeflow.synthetic.construct_tree import (
     build_baseline_tree,
     assign_features_to_tree,
     FeatureTreeNode,
 )
-from src.synthetic.tree_utils import (
+from src.codeflow.synthetic.tree_utils import (
     sample_nodes,
     sample_features,
     compute_feature_frequency,
@@ -160,7 +160,7 @@ class TestTrainingSplit:
 
 class TestSampleFeaturesEdgeCases:
     def test_empty_tree(self):
-        from src.synthetic.construct_tree import FeatureTree
+        from src.codeflow.synthetic.construct_tree import FeatureTree
         tree = FeatureTree()
         features = sample_features(tree, count=5)
         assert features == []

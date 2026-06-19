@@ -5,7 +5,7 @@ import pytest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from src.assembly.assembler import (
+from src.codeflow.assembly.assembler import (
     load_jsonl,
     compute_dedup_key,
     classify_example,

@@ -278,14 +278,14 @@ class TestTransferPipelineIntegration:
 
     def test_verify_semantic_fidelity_config_default(self):
         """verify_semantic_fidelity should default to True."""
-        from src.generation.transfer import TransferConfig
+        from src.style_transfer.transfer import TransferConfig
 
         config = TransferConfig()
         assert config.verify_semantic_fidelity is True
 
     def test_verify_semantic_fidelity_can_disable(self):
         """verify_semantic_fidelity can be set to False."""
-        from src.generation.transfer import TransferConfig
+        from src.style_transfer.transfer import TransferConfig
 
         config = TransferConfig(verify_semantic_fidelity=False)
         assert config.verify_semantic_fidelity is False

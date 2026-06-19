@@ -1,7 +1,7 @@
 """Tests for git diff parser."""
 
 import pytest
-from src.git_mining.diff_parser import parse_diff, DiffFile, DiffHunk
+from src.codeflow.git_mining.diff_parser import parse_diff, DiffFile, DiffHunk
 
 
 class TestParseDiff:

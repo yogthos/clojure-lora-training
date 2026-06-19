@@ -1,7 +1,7 @@
 """Tests for commit session grouper."""
 
 import pytest
-from src.git_mining.session_grouper import (
+from src.codeflow.git_mining.session_grouper import (
     CommitWithDiff,
     CommitSession,
     group_by_pr_boundary,
