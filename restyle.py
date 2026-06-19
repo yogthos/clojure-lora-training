@@ -324,6 +324,7 @@ def transfer_file(
 
     if app_config:
         gen = app_config.generation
+        pipeline = app_config.pipeline
         config = TransferConfig(
             temperature=temperature,
             verify_semantic_fidelity=verify,
@@ -332,14 +333,14 @@ def transfer_file(
             target_expansion_ratio=gen.target_expansion_ratio,
             expand_for_texture=expand_for_texture,
             expand_for_texture_explicit=expand_for_texture_explicit,
-            skip_neutralization=gen.skip_neutralization,
-            pass_headings_unchanged=gen.pass_headings_unchanged,
+            skip_neutralization=pipeline.skip_neutralization,
+            pass_headings_unchanged=pipeline.pass_headings_unchanged,
             min_paragraph_words=gen.min_paragraph_words,
-            use_structural_rag=gen.use_structural_rag,
-            use_structural_grafting=gen.use_structural_grafting,
-            rag_sample_size=gen.rag_sample_size,
-            apply_input_perturbation=gen.apply_input_perturbation,
-            use_persona=gen.use_persona,
+            use_structural_rag=pipeline.use_structural_rag,
+            use_structural_grafting=pipeline.use_structural_grafting,
+            rag_sample_size=pipeline.rag_sample_size,
+            apply_input_perturbation=pipeline.apply_input_perturbation,
+            use_persona=pipeline.use_persona,
         )
     else:
         config = TransferConfig(

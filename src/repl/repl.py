@@ -454,6 +454,7 @@ def run_repl(
     # Build transfer config
     if app_config:
         gen = app_config.generation
+        pipeline = app_config.pipeline
         transfer_config = TransferConfig(
             temperature=temperature,
             verify_semantic_fidelity=verify,
@@ -461,12 +462,12 @@ def run_repl(
             max_expansion_ratio=gen.max_expansion_ratio,
             target_expansion_ratio=gen.target_expansion_ratio,
             expand_for_texture=gen.expand_for_texture,
-            skip_neutralization=gen.skip_neutralization,
-            use_structural_rag=gen.use_structural_rag,
-            use_structural_grafting=gen.use_structural_grafting,
-            rag_sample_size=gen.rag_sample_size,
-            use_persona=gen.use_persona,
-            apply_input_perturbation=gen.apply_input_perturbation,
+            skip_neutralization=pipeline.skip_neutralization,
+            use_structural_rag=pipeline.use_structural_rag,
+            use_structural_grafting=pipeline.use_structural_grafting,
+            rag_sample_size=pipeline.rag_sample_size,
+            use_persona=pipeline.use_persona,
+            apply_input_perturbation=pipeline.apply_input_perturbation,
             pass_headings_unchanged=False,
             min_paragraph_words=5,
         )
