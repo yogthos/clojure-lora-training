@@ -8,6 +8,34 @@ import pytest
 from unittest.mock import patch, MagicMock
 
 
+class TestBaseUrlNormalization:
+    """base_url should yield a correct endpoint whether or not it includes /v1.
+
+    deepseek.py appends '/v1/chat/completions'. A caller that passes
+    'https://api.deepseek.com/v1' previously produced a doubled '/v1/v1/...'
+    path and a 404.
+    """
+
+    def _make(self, base_url):
+        from src.llm.deepseek import DeepSeekProvider
+        from src.llm.provider import LLMProviderConfig
+
+        cfg = LLMProviderConfig(api_key="k", base_url=base_url, model="deepseek-chat")
+        return DeepSeekProvider(cfg)
+
+    def test_endpoint_without_v1(self):
+        p = self._make("https://api.deepseek.com")
+        assert p._chat_url() == "https://api.deepseek.com/v1/chat/completions"
+
+    def test_endpoint_with_v1_not_doubled(self):
+        p = self._make("https://api.deepseek.com/v1")
+        assert p._chat_url() == "https://api.deepseek.com/v1/chat/completions"
+
+    def test_endpoint_with_trailing_slash(self):
+        p = self._make("https://api.deepseek.com/v1/")
+        assert p._chat_url() == "https://api.deepseek.com/v1/chat/completions"
+
+
 class TestLogitBiasRetry:
     """Tests for call_with_logit_bias retry behavior (Bug 10)."""
 

@@ -154,7 +154,7 @@ def setup_llm() -> "LLMProvider":
         from src.llm.deepseek import DeepSeekProvider
         config = LLMProviderConfig(
             api_key=os.environ.get("DEEPSEEK_API_KEY", ""),
-            base_url=os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1"),
+            base_url=os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
             model=os.environ.get("DEEPSEEK_MODEL", "deepseek-chat"),
             max_tokens=4096,
             temperature=0.7,
