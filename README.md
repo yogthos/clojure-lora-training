@@ -30,10 +30,10 @@ The trained model learns to develop Clojure code interactively via nREPL — eva
 ### Key modules
 
 - **`src/shared.py`** — Single source of truth: system prompt, JSONL I/O, dedup keys
-- **`src/git_mining/`** — Mines Clojure repos for commit transitions with multi-file diffs
-- **`src/synthetic/`** — Generates instruction/response pairs from Clojure feature taxonomies
-- **`src/assembly/`** — Merges, deduplicates, balances, and formats the final dataset
-- **`src/synthetic/prompts/`** — Prompt templates as standalone `.txt` files (editable without touching Python)
+- **`src/codeflow/git_mining/`** — Mines Clojure repos for commit transitions with multi-file diffs
+- **`src/codeflow/synthetic/`** — Generates instruction/response pairs from Clojure feature taxonomies
+- **`src/codeflow/assembly/`** — Merges, deduplicates, balances, and formats the final dataset
+- **`src/codeflow/synthetic/prompts/`** — Prompt templates as standalone `.txt` files (editable without touching Python)
 
 ## Quick Start (uv)
 
