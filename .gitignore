@@ -55,6 +55,10 @@ atlas_cache/
 lora_adapters/
 models/
 
+# Runtime data & generated artifacts
+data/
+*.epub
+
 # Agent instruction files (local-only)
 CLAUDE.md
 AGENTS.md
@@ -64,11 +68,6 @@ AGENTS.md
 # Logs
 logs/*.md
 !logs/.gitkeep
-data/training/howard_russell/LlamaFactory/train.jsonl
-data/blended/howard_russell_corpus_full.json
-data/blended/howard_russell_forward.json
-data/blended/howard_russell_reverse.json
-data/blended/howard_russell_short.json
 
 # Beads / Dolt files (added by bd init)
 .dolt/
