@@ -201,7 +201,7 @@ def get_commit_list(
     if since:
         cmd.append(f"--since={since}")
 
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, errors="replace")
     if result.returncode != 0:
         return []
 
@@ -256,7 +256,7 @@ def get_commit_diff(repo_path: str, commit_hash: str) -> str:
         commit_hash,
         "--", ".",  # only tracked files
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, errors="replace")
     if result.returncode != 0:
         return ""
     return result.stdout.strip()
@@ -265,7 +265,7 @@ def get_commit_diff(repo_path: str, commit_hash: str) -> str:
 def get_file_content(repo_path: str, commit_hash: str, filepath: str) -> str:
     """Get file content at a specific commit."""
     cmd = ["git", "-C", repo_path, "show", f"{commit_hash}:{filepath}"]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, errors="replace")
     if result.returncode != 0:
         return ""
     return result.stdout

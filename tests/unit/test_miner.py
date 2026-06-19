@@ -53,6 +53,62 @@ class TestMineRepository:
         assert isinstance(examples, list)
 
 
+class TestNonUtf8Tolerance:
+    """The miner must not crash when git output contains non-UTF-8 bytes.
+
+    Real repos (e.g. babashka) carry files with latin-1/binary bytes; a strict
+    UTF-8 decode of `git show` raised UnicodeDecodeError and dropped the whole
+    repo. git output should be decoded with errors='replace' instead.
+    """
+
+    def _make_repo_with_bad_bytes(self, root: Path) -> None:
+        def git(*args):
+            subprocess.run(["git", "-C", str(root), *args], check=True,
+                           capture_output=True)
+
+        git("init")
+        git("config", "user.email", "t@t")
+        git("config", "user.name", "t")
+        f = root / "core.clj"
+        # First commit: valid Clojure.
+        f.write_bytes(b"(ns app)\n(defn greet [] :hi)\n")
+        git("add", "-A")
+        git("commit", "-m", "add greet")
+        # Second commit: introduce a non-UTF-8 byte (0x9e) into the source.
+        f.write_bytes(b"(ns app)\n(defn greet [] :hi)\n;; \x9e marker\n")
+        git("add", "-A")
+        git("commit", "-m", "fix greet encoding edge case")
+
+    def test_get_commit_diff_tolerates_bad_bytes(self):
+        from src.codeflow.git_mining.miner import get_commit_diff, get_commit_list
+
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            self._make_repo_with_bad_bytes(root)
+            commits = get_commit_list(str(root))
+            # Should not raise UnicodeDecodeError.
+            diff = get_commit_diff(str(root), commits[0].hash)
+            assert isinstance(diff, str)
+
+    def test_get_file_content_tolerates_bad_bytes(self):
+        from src.codeflow.git_mining.miner import get_file_content, get_commit_list
+
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            self._make_repo_with_bad_bytes(root)
+            head = get_commit_list(str(root))[0].hash
+            content = get_file_content(str(root), head, "core.clj")
+            assert isinstance(content, str)
+            assert "marker" in content
+
+    def test_mine_repository_tolerates_bad_bytes(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            self._make_repo_with_bad_bytes(root)
+            examples = mine_repository(str(root), max_commits=20)
+            assert isinstance(examples, list)
+
+
 class TestMinedExample:
     """Unit tests for MinedExample structure."""
 
