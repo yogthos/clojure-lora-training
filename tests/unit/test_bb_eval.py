@@ -69,6 +69,21 @@ class TestEvalForms:
         assert r[0].ok is True
         assert not (tmp_path / "pollution.txt").exists()
 
+    def test_huge_value_is_truncated(self):
+        # A runaway form (e.g. a realized large/infinite seq) must not blow the
+        # captured value up to hundreds of MB — it is truncated with a marker.
+        r = eval_forms(['(apply str (repeat 100000 "x"))'])
+        assert r[0].ok is True
+        assert len(r[0].value) < 20000
+        assert "truncated" in r[0].value
+
+    def test_huge_stdout_is_truncated(self):
+        r = eval_forms(['(do (dotimes [_ 100000] (print "x")) 1)'])
+        assert r[0].ok is True
+        assert r[0].value == "1"
+        assert len(r[0].stdout) < 20000
+        assert "truncated" in r[0].stdout
+
 
 def test_bb_available_true_here():
     assert bb_available() is True

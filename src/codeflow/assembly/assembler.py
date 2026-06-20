@@ -210,7 +210,16 @@ def assemble_dataset(
 
     records = deduplicate(records)
     records = filter_by_length(records, max_chars=max_chars)
-    records = balance_by_type(records, max_per_type=max_per_type)
+
+    # Balance only the abundant git-mined pool by change type. The synthetic
+    # workflow set is small, curated, and execution-verified to a target count,
+    # and trains a distinct objective (the full agent loop) — so it is kept in
+    # full rather than diluted by random sampling inside saturated buckets.
+    git_records = [r for r in records if r.get("source") != "synthetic"]
+    synth_records = [r for r in records if r.get("source") == "synthetic"]
+    git_records = balance_by_type(git_records, max_per_type=max_per_type)
+    records = git_records + synth_records
+    random.Random(42).shuffle(records)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with open(output_path, "w") as f:

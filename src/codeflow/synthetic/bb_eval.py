@@ -25,6 +25,18 @@ _OUT = "<<<OUT>>>"
 _VAL = "<<<VAL>>>"
 _ERR = "<<<ERR>>>"
 
+# Per-form cap on a captured value/stdout. A runaway form (a realized large or
+# near-infinite seq) can print hundreds of MB; such a result is not a useful
+# training signal, so it is truncated to a marker rather than carried whole.
+_MAX_FIELD_CHARS = 8000
+
+
+def _truncate(text: str, limit: int = _MAX_FIELD_CHARS) -> str:
+    """Cap captured text, appending a marker noting the original length."""
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]} ...[truncated {len(text)} chars]"
+
 
 @dataclass
 class EvalResult:
@@ -114,8 +126,8 @@ def _parse_output(stdout: str, forms: List[str]) -> List[EvalResult]:
         out = _field(chunk, _OUT)
         results.append(EvalResult(
             form=form,
-            value=(val or "").strip(),
-            stdout=_unescape(out) if out else "",
+            value=_truncate((val or "").strip()),
+            stdout=_truncate(_unescape(out)) if out else "",
             ok=True,
         ))
     return results

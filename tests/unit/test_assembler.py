@@ -276,3 +276,35 @@ class TestAssembleDataset:
                 output_path=output,
             )
             assert len(result) == 0
+
+    def test_synthetic_exempt_from_type_cap(self):
+        # The per-type cap exists to tame the abundant git pool; the curated,
+        # verified synthetic workflow set should survive in full, not get
+        # diluted by random sampling inside saturated change-type buckets.
+        with TemporaryDirectory() as d:
+            dir_path = Path(d)
+            git_dir = dir_path / "git"
+            synth_dir = dir_path / "synth"
+            git_dir.mkdir()
+            synth_dir.mkdir()
+
+            # 100 git bug-fix records (one dominant change type).
+            _write_jsonl(git_dir / "g.jsonl", [
+                {"instruction": f"fix bug {i}", "output": "diff"}
+                for i in range(100)
+            ])
+            # 30 synthetic records that also classify as bug-fix.
+            _write_jsonl(synth_dir / "s.jsonl", [
+                {"instruction": f"resolve crash {i}", "output": "diff"}
+                for i in range(30)
+            ])
+
+            result = assemble_dataset(
+                git_paths=[git_dir], synth_paths=[synth_dir],
+                output_path=dir_path / "out.jsonl",
+                max_per_type=10,
+            )
+            git_kept = [r for r in result if r["source"] == "git"]
+            synth_kept = [r for r in result if r["source"] == "synthetic"]
+            assert len(git_kept) == 10        # git capped at max_per_type
+            assert len(synth_kept) == 30      # all synthetic survive
