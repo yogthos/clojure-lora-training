@@ -142,6 +142,17 @@ def parse_args() -> argparse.Namespace:
         help="Fraction for validation split",
     )
     parser.add_argument(
+        "--temperature", type=float, default=1.0,
+        help="Distribution-reweighting temperature for feature sampling "
+             "(EpiCoder Eq 1). 1.0=proportional; >1 smooths toward uniform so "
+             "underrepresented features get more tasks; <1 sharpens.",
+    )
+    parser.add_argument(
+        "--temperatures", type=float, nargs="+", default=None, metavar="T",
+        help="Mix several reweighting temperatures (e.g. --temperatures 0.7 1.0 "
+             "2.0). The task budget is split across them. Overrides --temperature.",
+    )
+    parser.add_argument(
         "--stats", action="store_true",
         help="Print generation statistics",
     )
@@ -263,6 +274,8 @@ def step_generate_tasks(args, tree: FeatureTree, llm) -> List[GeneratedTask]:
         tree, llm,
         tasks_per_node=3,
         max_total=args.target,
+        temperature=args.temperature,
+        temperatures=args.temperatures,
     )
     return tasks
 

@@ -233,48 +233,76 @@ def generate_tasks_from_tree(
     tasks_per_node: int = 2,
     max_total: int = 50,
     min_depth: int = 1,
+    temperature: float = 1.0,
+    temperatures: Optional[List[float]] = None,
 ) -> List[GeneratedTask]:
     """Generate tasks from across the feature taxonomy tree.
 
-    Walks nodes at min_depth or deeper, generating tasks proportional
-    to each node's feature count.
+    Walks nodes at min_depth or deeper and allocates the task budget across
+    them by feature frequency, reweighted by temperature (EpiCoder Eq 1). At
+    temperature 1 this is plain proportional sampling; higher temperatures
+    smooth the allocation so underrepresented features get more tasks instead
+    of being crowded out by high-frequency-but-easy ones.
 
     Args:
         tree: The populated feature taxonomy.
         llm: LLM provider.
-        tasks_per_node: Base tasks per node (scaled by feature count).
-        max_total: Maximum total tasks to generate.
+        tasks_per_node: Per-node floor — reserve this many tasks for each node
+            before distributing the remainder by reweighted frequency (subject
+            to the budget).
+        max_total: Total task budget.
         min_depth: Minimum node depth to generate from.
+        temperature: Reweighting temperature for the frequency distribution.
+        temperatures: Optional list of temperatures to mix. The budget is split
+            evenly across them and each slice allocated at its own temperature,
+            widening the range of feature distributions (per the paper). Takes
+            precedence over ``temperature`` when given.
 
     Returns:
         List of GeneratedTask objects, shuffled for diversity.
     """
-    all_tasks = []
+    from .tree_utils import allocate_by_reweighted_frequency
 
-    # Collect eligible nodes, weighted by feature count
-    nodes_with_features = [
-        (name, node) for name, node in tree.nodes.items()
-        if node.depth >= min_depth
+    nodes = [
+        node for _, node in tree.nodes.items()
+        if node.depth >= min_depth and node.features
     ]
-    nodes_with_features.sort(
-        key=lambda x: len(x[1].features), reverse=True
-    )
+    if not nodes:
+        return []
 
-    for node_name, node in nodes_with_features:
+    freqs = [len(node.features) for node in nodes]
+    temps = temperatures if temperatures else [temperature]
+
+    # Split the budget across temperatures, then allocate each slice by its own
+    # reweighted distribution and sum the per-node counts.
+    per_temp = _split_budget(max_total, len(temps))
+    totals = [0] * len(nodes)
+    for t, budget in zip(temps, per_temp):
+        counts = allocate_by_reweighted_frequency(
+            freqs, budget, t, min_each=tasks_per_node
+        )
+        for i, c in enumerate(counts):
+            totals[i] += c
+
+    all_tasks: List[GeneratedTask] = []
+    for node, n in zip(nodes, totals):
         if len(all_tasks) >= max_total:
             break
-
-        # Scale: more features → more tasks
-        feature_count = max(len(node.features), 1)
-        n = min(tasks_per_node * max(1, feature_count // 3), max_total - len(all_tasks))
         if n <= 0:
             continue
-
-        tasks = generate_tasks_from_node(node, llm, count=n)
-        all_tasks.extend(tasks)
+        n = min(n, max_total - len(all_tasks))
+        all_tasks.extend(generate_tasks_from_node(node, llm, count=n))
 
     random.shuffle(all_tasks)
     return all_tasks[:max_total]
+
+
+def _split_budget(total: int, parts: int) -> List[int]:
+    """Split an integer budget into ``parts`` near-equal chunks summing to total."""
+    if parts <= 0:
+        return []
+    base, rem = divmod(total, parts)
+    return [base + (1 if i < rem else 0) for i in range(parts)]
 
 
 def filter_tasks_by_difficulty(

@@ -14,7 +14,87 @@ from src.codeflow.synthetic.tree_utils import (
     find_sparse_nodes,
     compute_tree_diversity,
     generate_training_split,
+    reweight_frequencies,
+    allocate_by_reweighted_frequency,
 )
+
+
+class TestReweightFrequencies:
+    """EpiCoder Eq 1: p'_i = exp(log p_i / t) / sum_j exp(log p_j / t)."""
+
+    def test_sums_to_one(self):
+        p = reweight_frequencies([3, 1, 1], t=1.5)
+        assert abs(sum(p) - 1.0) < 1e-9
+
+    def test_t1_reproduces_normalized_frequency(self):
+        # t=1 leaves the distribution unchanged.
+        p = reweight_frequencies([3, 1, 1], t=1.0)
+        assert p == pytest.approx([0.6, 0.2, 0.2])
+
+    def test_high_t_flattens_toward_uniform(self):
+        # A large temperature smooths the distribution: the dominant feature
+        # loses share, the rare ones gain — the whole point of reweighting.
+        base = reweight_frequencies([8, 1, 1], t=1.0)
+        hot = reweight_frequencies([8, 1, 1], t=5.0)
+        assert hot[0] < base[0]          # dominant downweighted
+        assert hot[1] > base[1]          # rare upweighted
+        # closer to uniform (1/3 each)
+        assert abs(hot[0] - 1 / 3) < abs(base[0] - 1 / 3)
+
+    def test_low_t_sharpens(self):
+        cold = reweight_frequencies([8, 1, 1], t=0.5)
+        base = reweight_frequencies([8, 1, 1], t=1.0)
+        assert cold[0] > base[0]         # dominant gets even more
+
+    def test_very_high_t_approaches_uniform(self):
+        p = reweight_frequencies([100, 1, 1], t=1e6)
+        assert p == pytest.approx([1 / 3, 1 / 3, 1 / 3], abs=1e-3)
+
+    def test_zero_frequency_stays_zero(self):
+        p = reweight_frequencies([4, 0, 4], t=2.0)
+        assert p[1] == 0.0
+        assert p[0] == pytest.approx(p[2])
+
+    def test_all_zero_is_uniform(self):
+        p = reweight_frequencies([0, 0, 0, 0], t=1.0)
+        assert p == pytest.approx([0.25, 0.25, 0.25, 0.25])
+
+    def test_empty(self):
+        assert reweight_frequencies([], t=1.0) == []
+
+    def test_single(self):
+        assert reweight_frequencies([5], t=2.0) == pytest.approx([1.0])
+
+    def test_nonpositive_t_raises(self):
+        with pytest.raises(ValueError):
+            reweight_frequencies([1, 2], t=0.0)
+
+
+class TestAllocateByReweightedFrequency:
+    def test_sums_to_total(self):
+        counts = allocate_by_reweighted_frequency([10, 1, 1], total=20, t=1.5)
+        assert sum(counts) == 20
+        assert len(counts) == 3
+
+    def test_high_t_more_even_than_low(self):
+        cold = allocate_by_reweighted_frequency([20, 1, 1], total=30, t=0.5)
+        hot = allocate_by_reweighted_frequency([20, 1, 1], total=30, t=8.0)
+        # The dominant bucket gets a smaller share at high temperature.
+        assert hot[0] < cold[0]
+        assert hot[1] >= cold[1]
+
+    def test_min_each_floor_is_respected(self):
+        counts = allocate_by_reweighted_frequency(
+            [100, 0, 0], total=10, t=1.0, min_each=1
+        )
+        assert all(c >= 1 for c in counts)
+        assert sum(counts) == 10
+
+    def test_zero_total(self):
+        assert allocate_by_reweighted_frequency([1, 2, 3], total=0, t=1.0) == [0, 0, 0]
+
+    def test_empty(self):
+        assert allocate_by_reweighted_frequency([], total=5, t=1.0) == []
 
 
 class TestSampleNodes:
