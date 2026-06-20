@@ -195,11 +195,18 @@ def assemble_dataset(
     """
     records = []
 
+    # Tag origin so the pipeline can report the git/synthetic mix. Git is loaded
+    # first, so on a cross-source duplicate the git record wins dedup. The tag is
+    # transient — format standardization drops it from the final training JSONL.
     for p in git_paths:
-        records.extend(load_jsonl(p))
+        for rec in load_jsonl(p):
+            rec.setdefault("source", "git")
+            records.append(rec)
 
     for p in synth_paths:
-        records.extend(load_jsonl(p))
+        for rec in load_jsonl(p):
+            rec.setdefault("source", "synthetic")
+            records.append(rec)
 
     records = deduplicate(records)
     records = filter_by_length(records, max_chars=max_chars)

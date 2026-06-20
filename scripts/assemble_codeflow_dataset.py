@@ -16,6 +16,7 @@ Usage:
 import argparse
 import json
 import sys
+from collections import Counter
 from pathlib import Path
 
 from src.codeflow.assembly.assembler import assemble_dataset
@@ -120,6 +121,10 @@ def main() -> int:
         max_chars=max_chars,
     )
     print(f"  Assembled:    {len(records)} records")
+    src_counts = Counter(r.get("source", "unknown") for r in records)
+    if len(src_counts) > 1 or "unknown" not in src_counts:
+        print("  By source:    " + ", ".join(
+            f"{src}={n}" for src, n in sorted(src_counts.items())))
 
     # Step 2: Format for LLaMA-Factory
     if not args.no_format:

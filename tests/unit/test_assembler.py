@@ -223,6 +223,44 @@ class TestAssembleDataset:
             assert len(result) == 1
             assert result[0]["instruction"] == "fix small bug"
 
+    def test_tags_record_source(self):
+        with TemporaryDirectory() as d:
+            dir_path = Path(d)
+            git_dir = dir_path / "git"
+            synth_dir = dir_path / "synth"
+            git_dir.mkdir()
+            synth_dir.mkdir()
+            _write_jsonl(git_dir / "g.jsonl", [
+                {"instruction": "fix null bug", "output": "diff-g"},
+            ])
+            _write_jsonl(synth_dir / "s.jsonl", [
+                {"instruction": "add feature endpoint", "output": "diff-s"},
+            ])
+            result = assemble_dataset(
+                git_paths=[git_dir], synth_paths=[synth_dir],
+                output_path=dir_path / "out.jsonl",
+            )
+            by_instr = {r["instruction"]: r["source"] for r in result}
+            assert by_instr["fix null bug"] == "git"
+            assert by_instr["add feature endpoint"] == "synthetic"
+
+    def test_dup_across_sources_keeps_git(self):
+        with TemporaryDirectory() as d:
+            dir_path = Path(d)
+            git_dir = dir_path / "git"
+            synth_dir = dir_path / "synth"
+            git_dir.mkdir()
+            synth_dir.mkdir()
+            dup = {"instruction": "fix null bug", "output": "same-diff"}
+            _write_jsonl(git_dir / "g.jsonl", [dict(dup)])
+            _write_jsonl(synth_dir / "s.jsonl", [dict(dup)])
+            result = assemble_dataset(
+                git_paths=[git_dir], synth_paths=[synth_dir],
+                output_path=dir_path / "out.jsonl",
+            )
+            assert len(result) == 1
+            assert result[0]["source"] == "git"  # git loaded first, wins dedup
+
     def test_handles_empty_inputs(self):
         with TemporaryDirectory() as d:
             dir_path = Path(d)
