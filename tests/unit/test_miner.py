@@ -275,6 +275,59 @@ class TestMinedExample:
         assert "output" in parsed
 
 
+class TestBeforeStateTrimming:
+    """Input should show only the changed top-level forms (+ ns), not whole
+    files — otherwise multi-file arcs blow past the training context window."""
+
+    _BEFORE = (
+        "(ns app)\n\n"
+        "(defn f-1 [] 1)\n\n"
+        "(defn f-2 [] 2)\n\n"
+        "(defn f-3 [] 3)\n"
+    )
+    _DIFF = (
+        "diff --git a/core.clj b/core.clj\n"
+        "--- a/core.clj\n+++ b/core.clj\n"
+        "@@ -5,1 +5,1 @@\n-(defn f-2 [] 2)\n+(defn f-2 [] 22)\n"
+    )
+
+    def test_form_spans_identify_top_level_forms(self):
+        from src.codeflow.git_mining.miner import _top_level_form_spans
+        spans = _top_level_form_spans(self._BEFORE)
+        # (ns app) at line 1, f-1 at 3, f-2 at 5, f-3 at 7
+        starts = [s for (s, e, t) in spans]
+        assert starts == [1, 3, 5, 7]
+
+    def test_keeps_changed_form_and_ns_drops_others(self):
+        from src.codeflow.git_mining.miner import _format_changed_regions
+        out = _format_changed_regions({"core.clj": self._BEFORE}, self._DIFF)
+        assert "(ns app)" in out          # ns kept for context
+        assert "f-2" in out               # the changed form kept
+        assert "f-1" not in out           # untouched forms dropped
+        assert "f-3" not in out
+        assert "core.clj" in out          # file header preserved
+
+    def test_trimmed_is_smaller_than_whole_file(self):
+        from src.codeflow.git_mining.miner import (
+            _format_changed_regions, _format_file_tree,
+        )
+        trimmed = _format_changed_regions({"core.clj": self._BEFORE}, self._DIFF)
+        whole = _format_file_tree({"core.clj": self._BEFORE})
+        assert len(trimmed) < len(whole)
+
+    def test_to_dict_input_is_trimmed(self):
+        ex = MinedExample(
+            repo_name="r",
+            instruction="bump f-2",
+            before={"core.clj": self._BEFORE},
+            after={"core.clj": self._BEFORE.replace("[] 2)", "[] 22)")},
+            diff=self._DIFF,
+            changed_files=["core.clj"],
+        )
+        d = ex.to_dict()
+        assert "f-2" in d["input"] and "f-1" not in d["input"]
+
+
 class TestFormatting:
     """Test the output formatting utilities."""
 

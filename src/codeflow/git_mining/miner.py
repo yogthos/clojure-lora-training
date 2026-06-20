@@ -49,7 +49,7 @@ class MinedExample:
         return {
             "system": _TRANSITION_SYSTEM_PROMPT,
             "instruction": self.instruction,
-            "input": _format_file_tree(self.before),
+            "input": _format_changed_regions(self.before, self.diff),
             "output": self.diff,
         }
 
@@ -63,6 +63,109 @@ def _format_file_tree(files: Dict[str, str]) -> str:
     parts = []
     for path, content in sorted(files.items()):
         parts.append(f"### {path}\n```clojure\n{content}\n```")
+    return "\n\n".join(parts)
+
+
+def _top_level_form_spans(content: str) -> List[tuple[int, int, str]]:
+    """Top-level forms in Clojure source as (start_line, end_line, text).
+
+    Lines are 1-indexed and inclusive. A form begins where bracket depth goes
+    0 -> 1 and ends where it returns to 0, tracking strings, line comments, and
+    character literals so delimiters inside them don't shift the depth.
+    """
+    spans: List[tuple[int, int]] = []
+    depth = 0
+    in_string = False
+    escaped = False
+    in_line_comment = False
+    line_no = 1
+    form_start: Optional[int] = None
+
+    i, n = 0, len(content)
+    while i < n:
+        ch = content[i]
+        if ch == "\n":
+            in_line_comment = False
+            line_no += 1
+            i += 1
+            continue
+        if in_line_comment:
+            i += 1
+            continue
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            i += 1
+            continue
+        if ch == ";":
+            in_line_comment = True
+        elif ch == '"':
+            in_string = True
+        elif ch == "\\":  # character literal, e.g. \( — skip the next char
+            i += 2
+            continue
+        elif ch in "([{":
+            if depth == 0:
+                form_start = line_no
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+            if depth <= 0:
+                depth = 0
+                if form_start is not None:
+                    spans.append((form_start, line_no))
+                    form_start = None
+        i += 1
+
+    if form_start is not None:  # unterminated form
+        spans.append((form_start, line_no))
+
+    lines = content.splitlines()
+    return [(s, e, "\n".join(lines[s - 1:e])) for (s, e) in spans]
+
+
+def _format_changed_regions(before: Dict[str, str], diff: str) -> str:
+    """Render the before-state showing only the changed top-level forms.
+
+    For each file, keep the forms whose lines overlap a diff hunk's old range,
+    plus the ``ns`` form for context. Non-adjacent kept forms are separated by a
+    ``;; ...`` elision marker. This bounds the input to the functions actually
+    being edited instead of inlining whole files.
+    """
+    ranges_by_path: Dict[str, List[tuple[int, int]]] = {}
+    for f in parse_diff(diff):
+        rs = ranges_by_path.setdefault(f.path, [])
+        for h in f.hunks:
+            count = h.old_count if h.old_count else 1
+            rs.append((h.old_start, h.old_start + count - 1))
+
+    parts = []
+    for path in sorted(before):
+        content = before[path]
+        ranges = ranges_by_path.get(path)
+        if ranges:
+            kept = [
+                (s, e, text) for (s, e, text) in _top_level_form_spans(content)
+                if text.lstrip().startswith("(ns ")
+                or any(s <= re and rs <= e for (rs, re) in ranges)
+            ]
+        else:
+            kept = []
+        if not kept:
+            body = content  # fallback: no ranges matched or unparseable
+        else:
+            chunks, prev_end = [], None
+            for (s, e, text) in sorted(kept):
+                if prev_end is not None and s > prev_end + 1:
+                    chunks.append(";; ...")
+                chunks.append(text)
+                prev_end = e
+            body = "\n".join(chunks)
+        parts.append(f"### {path}\n```clojure\n{body}\n```")
     return "\n\n".join(parts)
 
 
