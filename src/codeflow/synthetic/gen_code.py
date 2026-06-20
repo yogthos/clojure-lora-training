@@ -35,6 +35,8 @@ class CodeGenResult:
     analysis: dict
     solution: str  # Complete REPL + diff output
     repo_name: str = ""
+    verified: bool = False    # solution's forms were executed in babashka
+    pass_rate: float = 1.0    # fraction of forms that executed cleanly
 
     def to_training_example(self) -> dict:
         """Convert to LLaMA-Factory training format."""
@@ -216,16 +218,25 @@ def generate_training_examples(
     tasks: List[dict],
     llm: LLMProvider,
     max_examples: int = 50,
+    verify: bool = False,
+    bb_path: str = "bb",
+    min_pass_rate: float = 1.0,
 ) -> List[CodeGenResult]:
     """Generate complete training examples from a list of tasks.
 
-    Each task goes through: analysis → code generation.
-    The result is ready for LLaMA-Factory training JSONL output.
+    Each task goes through: analysis → code generation. When ``verify`` is set,
+    the generated REPL forms are executed in babashka, their ``;; result:``
+    lines are rewritten with the real output, and solutions whose forms execute
+    cleanly below ``min_pass_rate`` (or have no runnable forms) are dropped.
 
     Args:
         tasks: List of GeneratedTask dicts (from gen_question).
         llm: LLM provider.
         max_examples: Maximum number of examples to generate.
+        verify: Execute and ground each solution's forms before keeping it.
+        bb_path: babashka binary to use for verification.
+        min_pass_rate: Minimum fraction of forms that must run cleanly to keep
+            a verified solution.
 
     Returns:
         List of CodeGenResult ready for training.
@@ -243,11 +254,26 @@ def generate_training_examples(
         # Pass 2: code with REPL
         solution = generate_code(instruction, analysis, llm)
 
+        verified = False
+        pass_rate = 1.0
+        if verify:
+            from .verify import verify_and_ground
+
+            grounded = verify_and_ground(solution, bb_path=bb_path)
+            # Drop solutions with no runnable forms or too many failures.
+            if grounded.total == 0 or grounded.pass_rate < min_pass_rate:
+                continue
+            solution = grounded.solution
+            verified = True
+            pass_rate = grounded.pass_rate
+
         results.append(CodeGenResult(
             instruction=instruction,
             analysis=analysis,
             solution=solution,
             repo_name="synthetic",
+            verified=verified,
+            pass_rate=pass_rate,
         ))
 
     return results
