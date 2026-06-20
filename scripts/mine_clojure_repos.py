@@ -74,6 +74,15 @@ def parse_args() -> argparse.Namespace:
         help="Only commits after this date (e.g., '2024-01-01')",
     )
     parser.add_argument(
+        "--triplet-span", type=int, default=3,
+        help="Commits per (R_old, P, R_new) arc (default: 3; 1 = per-commit)",
+    )
+    parser.add_argument(
+        "--lifecycle-window", type=str, default="0.4,0.8",
+        help="Percentile band of project life to mine, e.g. '0.4,0.8' "
+             "(IQuest mature phase). Pass 'none' to mine full history.",
+    )
+    parser.add_argument(
         "--pattern", type=str, action="append", dest="patterns",
         choices=[
             "pure-refactor", "state-machine", "side-effect-isolation",
@@ -139,6 +148,12 @@ def main():
     args = parse_args()
     repos = resolve_repos(args)
 
+    if args.lifecycle_window.strip().lower() == "none":
+        lifecycle_window = None
+    else:
+        lo, hi = (float(x) for x in args.lifecycle_window.split(","))
+        lifecycle_window = (lo, hi)
+
     clone_dir = args.clone_dir or tempfile.mkdtemp(prefix="clj-mine-")
     all_examples: List[MinedExample] = []
     stats = Counter()
@@ -158,6 +173,8 @@ def main():
                 repo_name=repo_name,
                 max_commits=args.max_commits,
                 since=args.since,
+                lifecycle_window=lifecycle_window,
+                triplet_span=args.triplet_span,
             )
         except Exception as e:
             print(f"Error mining {repo_name}: {e}", file=sys.stderr)

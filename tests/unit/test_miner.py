@@ -109,6 +109,124 @@ class TestNonUtf8Tolerance:
             assert isinstance(examples, list)
 
 
+class TestLifecycleWindowing:
+    """IQuest §3.1: sample commits from the 40-80% percentile of project life,
+    not the most-recent N from HEAD."""
+
+    def _make_linear_repo(self, root: Path, n: int) -> None:
+        def git(*args):
+            subprocess.run(["git", "-C", str(root), *args], check=True,
+                           capture_output=True)
+
+        git("init")
+        git("config", "user.email", "t@t")
+        git("config", "user.name", "t")
+        body = "(ns app)\n"
+        for i in range(1, n + 1):
+            body += f"(defn f-{i} [] {i})\n"
+            (root / "core.clj").write_text(body)
+            git("add", "-A")
+            git("commit", "-m", f"commit {i}: add feature {i} to the namespace")
+
+    def test_window_selects_middle_band(self):
+        from src.codeflow.git_mining.miner import get_lifecycle_commits
+
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            self._make_linear_repo(root, 10)
+            commits = get_lifecycle_commits(str(root), low=0.4, high=0.8)
+            # 10 commits chronological -> indices [4,8) -> commits 5,6,7,8
+            assert len(commits) == 4
+            msgs = " ".join(c.message for c in commits)
+            assert "commit 5:" in msgs and "commit 8:" in msgs
+            assert "commit 1:" not in msgs and "commit 10:" not in msgs
+
+    def test_window_is_chronological(self):
+        from src.codeflow.git_mining.miner import get_lifecycle_commits
+
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            self._make_linear_repo(root, 10)
+            commits = get_lifecycle_commits(str(root), low=0.0, high=1.0)
+            nums = [int(c.message.split()[1].rstrip(":")) for c in commits]
+            assert nums == sorted(nums)  # oldest -> newest
+
+    def test_full_window_keeps_all(self):
+        from src.codeflow.git_mining.miner import get_lifecycle_commits
+
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            self._make_linear_repo(root, 6)
+            assert len(get_lifecycle_commits(str(root), low=0.0, high=1.0)) == 6
+
+
+class TestTripletSpans:
+    """IQuest §3.1: multi-iteration (R_old, P, R_new) triplets via forward spans."""
+
+    def _make_linear_repo(self, root: Path, n: int) -> None:
+        def git(*args):
+            subprocess.run(["git", "-C", str(root), *args], check=True,
+                           capture_output=True)
+
+        git("init")
+        git("config", "user.email", "t@t")
+        git("config", "user.name", "t")
+        body = "(ns app)\n"
+        for i in range(1, n + 1):
+            body += f"(defn f-{i} [] {i})\n"
+            (root / "core.clj").write_text(body)
+            git("add", "-A")
+            git("commit", "-m", f"commit {i}: add feature {i} to the namespace")
+
+    def test_span_produces_cumulative_diff(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            self._make_linear_repo(root, 9)
+            examples = mine_repository(
+                str(root), lifecycle_window=(0.0, 1.0), triplet_span=3,
+            )
+            assert len(examples) >= 1
+            # The first arc spans commits 1-3, so its diff adds f-1, f-2 AND f-3
+            # (a single-commit diff would only add one).
+            first = examples[0]
+            assert "f-1" in first.diff and "f-2" in first.diff and "f-3" in first.diff
+
+    def test_span_one_is_per_commit(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            self._make_linear_repo(root, 6)
+            examples = mine_repository(
+                str(root), lifecycle_window=(0.0, 1.0), triplet_span=1,
+            )
+            # One example per commit; each diff adds exactly its own feature.
+            assert len(examples) == 6
+            assert "f-1" in examples[0].diff and "f-2" not in examples[0].diff
+
+    def test_instruction_combines_arc_messages(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            self._make_linear_repo(root, 6)
+            examples = mine_repository(
+                str(root), lifecycle_window=(0.0, 1.0), triplet_span=3,
+            )
+            # Arc instruction should reference more than one commit's intent.
+            assert any(
+                ex.instruction.count("feature") >= 2 for ex in examples
+            )
+
+    def test_lifecycle_window_limits_arcs(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            self._make_linear_repo(root, 10)
+            windowed = mine_repository(
+                str(root), lifecycle_window=(0.4, 0.8), triplet_span=2,
+            )
+            full = mine_repository(
+                str(root), lifecycle_window=(0.0, 1.0), triplet_span=2,
+            )
+            assert len(windowed) < len(full)
+
+
 class TestMinedExample:
     """Unit tests for MinedExample structure."""
 

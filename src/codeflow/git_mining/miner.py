@@ -13,11 +13,21 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from .commit_filter import CommitInfo, filter_clojure_commits
+from .commit_filter import (
+    CommitInfo,
+    filter_clojure_commits,
+    has_meaningful_message,
+    is_clojure_file,
+)
 from .diff_parser import parse_diff
-from .session_grouper import CommitWithDiff, group_by_pr_boundary
 
 from ...shared import _SYSTEM_PROMPT
+
+# The well-known SHA of git's empty tree, used as the base for a repo's root
+# commit (which has no parent) so its arc still produces a diff.
+_EMPTY_TREE_SHA = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+
+_CLOJURE_PATHSPECS = ["*.clj", "*.cljs", "*.cljc", "*.edn"]
 
 
 @dataclass
@@ -188,16 +198,20 @@ def _top_level_forms(content: str) -> List[str]:
 
 def get_commit_list(
     repo_path: str,
-    max_count: int = 1000,
+    max_count: int | None = 1000,
     since: str | None = None,
 ) -> List[CommitInfo]:
-    """Get list of commits from a git repository."""
+    """Get list of commits from a git repository (newest first).
+
+    max_count=None walks the full history (needed for lifecycle windowing).
+    """
     cmd = [
         "git", "-C", repo_path, "log",
-        f"--max-count={max_count}",
         "--pretty=format:%H%x00%P%x00%aI%x00%s",
         "--name-only",
     ]
+    if max_count is not None:
+        cmd.insert(4, f"--max-count={max_count}")
     if since:
         cmd.append(f"--since={since}")
 
@@ -251,6 +265,7 @@ def get_commit_diff(repo_path: str, commit_hash: str) -> str:
     """Get the unified diff for a single commit."""
     cmd = [
         "git", "-C", repo_path, "show",
+        "--no-ext-diff",  # ignore a user's diff.external (e.g. difftastic)
         "--format=",  # suppress commit info
         "--unified=3",
         commit_hash,
@@ -271,89 +286,169 @@ def get_file_content(repo_path: str, commit_hash: str, filepath: str) -> str:
     return result.stdout
 
 
+def get_range_diff(
+    repo_path: str,
+    base_ref: str,
+    head_ref: str,
+    pathspecs: Optional[List[str]] = None,
+) -> str:
+    """Cumulative unified diff between two refs (R_old -> R_new).
+
+    Unlike get_commit_diff (single commit), this spans an arc of development.
+    pathspecs restrict the diff to matching files (git globs match '/').
+    """
+    cmd = ["git", "-C", repo_path, "diff", "--no-ext-diff", "--unified=3",
+           base_ref, head_ref]
+    if pathspecs:
+        cmd.append("--")
+        cmd.extend(pathspecs)
+    result = subprocess.run(cmd, capture_output=True, text=True, errors="replace")
+    if result.returncode != 0:
+        return ""
+    return result.stdout.strip()
+
+
+def _base_ref(repo_path: str, commit_hash: str) -> str:
+    """Parent of a commit, or git's empty tree if it's the root commit."""
+    result = subprocess.run(
+        ["git", "-C", repo_path, "rev-parse", "--verify", "-q", f"{commit_hash}^"],
+        capture_output=True, text=True, errors="replace",
+    )
+    ref = result.stdout.strip()
+    return ref if result.returncode == 0 and ref else _EMPTY_TREE_SHA
+
+
+def get_lifecycle_commits(
+    repo_path: str,
+    low: float = 0.4,
+    high: float = 0.8,
+    max_commits: int | None = None,
+    since: str | None = None,
+) -> List[CommitInfo]:
+    """Commits within the [low, high] percentile band of project lifecycle.
+
+    IQuest §3.1: the 40-80% band is the mature/stable development phase —
+    avoiding both early-project churn and late-stage fragmented maintenance.
+    Returned oldest-first (chronological).
+    """
+    chrono = list(reversed(get_commit_list(repo_path, max_count=None, since=since)))
+    n = len(chrono)
+    if n == 0:
+        return []
+    lo = int(low * n)
+    hi = int(high * n)
+    window = chrono[lo:hi]
+    if max_commits and len(window) > max_commits:
+        window = window[:max_commits]
+    return window
+
+
+def _synthesize_instruction(messages: List[str]) -> str:
+    """Combine an arc's commit messages into a single instruction.
+
+    Keeps the substantive first line of each commit, drops merge/trivial
+    messages, and dedupes. The arc's combined intent is what the patch
+    accomplishes from R_old to R_new.
+    """
+    lines: List[str] = []
+    for msg in messages:
+        first = (msg or "").strip().splitlines()[0].strip() if msg else ""
+        if not first:
+            continue
+        if first.startswith("Merge pull request") or first.startswith("Merge branch"):
+            continue
+        if not has_meaningful_message(first):
+            continue
+        if first not in lines:
+            lines.append(first)
+    return "; ".join(lines)
+
+
 def mine_repository(
     repo_path: str,
     repo_name: str = "",
     max_commits: int = 500,
     since: str | None = None,
+    lifecycle_window: Optional[tuple[float, float]] = (0.4, 0.8),
+    triplet_span: int = 3,
 ) -> List[MinedExample]:
-    """Mine a Clojure repository for before/after training examples.
+    """Mine a Clojure repository for code-flow (R_old, P, R_new) triplets.
 
-    Pipeline:
-    1. Get commit list
-    2. Filter for Clojure-relevant commits
-    3. Group into sessions
-    4. For each commit: get diff, extract before/after state
-    5. Produce MinedExample records
+    Follows the IQuest-Coder git-history recipe (Tech Report §3.1):
+    1. Select commits from the project's mature phase via ``lifecycle_window``
+       (default 40-80% percentile), not the most-recent N from HEAD.
+    2. Walk the Clojure-relevant commits in non-overlapping arcs of
+       ``triplet_span`` commits, forming a cumulative diff for each arc — a
+       multi-iteration development span rather than a single commit.
+    3. Keep only arcs with a non-empty Clojure diff and a meaningful combined
+       instruction (endpoint quality filtering).
+
+    triplet_span=1 reproduces single-commit granularity. lifecycle_window=None
+    walks the full history (capped by max_commits).
     """
     if not repo_name:
         repo_name = Path(repo_path).name
 
-    # Get and filter commits
-    raw_commits = get_commit_list(repo_path, max_count=max_commits, since=since)
-    filtered = filter_clojure_commits(raw_commits)
-
-    # Get diffs for filtered commits
-    with_diff = []
-    for commit in filtered:
-        diff_text = get_commit_diff(repo_path, commit.hash)
-        if not diff_text:
-            continue
-        parsed = parse_diff(diff_text)
-        changed = [f.path for f in parsed]
-        with_diff.append(CommitWithDiff(
-            hash=commit.hash,
-            message=commit.message,
-            timestamp=commit.timestamp,
-            diff_text=diff_text,
-            changed_files=changed,
+    # Step 1: select commits (chronological, oldest-first).
+    if lifecycle_window is not None:
+        low, high = lifecycle_window
+        commits = get_lifecycle_commits(
+            repo_path, low=low, high=high, max_commits=max_commits, since=since
+        )
+    else:
+        commits = list(reversed(
+            get_commit_list(repo_path, max_count=max_commits, since=since)
         ))
 
-    # Group into sessions
-    sessions = group_by_pr_boundary(with_diff)
+    filtered = filter_clojure_commits(commits)
 
-    # Produce examples
-    examples = []
-    for session in sessions:
-        if len(session.commits) < 1:
+    # Step 2: walk non-overlapping arcs, forming a cumulative triplet each.
+    span = max(1, triplet_span)
+    examples: List[MinedExample] = []
+    for i in range(0, len(filtered), span):
+        arc = filtered[i:i + span]
+        if not arc:
+            continue
+        start, end = arc[0], arc[-1]
+        base_ref = _base_ref(repo_path, start.hash)
+        head_ref = end.hash
+
+        diff_text = get_range_diff(
+            repo_path, base_ref, head_ref, pathspecs=_CLOJURE_PATHSPECS
+        )
+        if not diff_text:
             continue
 
-        # Use the session's combined changes
-        for commit in session.commits:
-            parsed = parse_diff(commit.diff_text)
-            if not parsed:
-                continue
+        parsed = [df for df in parse_diff(diff_text) if is_clojure_file(df.path)]
+        if not parsed:
+            continue
 
-            # Get before and after state for changed files
-            before_state = {}
-            after_state = {}
-            for df in parsed:
-                if df.change_type == "deleted":
-                    before_state[df.path] = get_file_content(
-                        repo_path, f"{commit.hash}~1", df.path
-                    )
-                elif df.change_type == "added":
-                    after_state[df.path] = get_file_content(
-                        repo_path, commit.hash, df.path
-                    )
-                else:
-                    before_state[df.path] = get_file_content(
-                        repo_path, f"{commit.hash}~1", df.path
-                    )
-                    after_state[df.path] = get_file_content(
-                        repo_path, commit.hash, df.path
-                    )
+        before_state: Dict[str, str] = {}
+        after_state: Dict[str, str] = {}
+        for df in parsed:
+            if df.change_type == "deleted":
+                before_state[df.path] = get_file_content(repo_path, base_ref, df.path)
+            elif df.change_type == "added":
+                after_state[df.path] = get_file_content(repo_path, head_ref, df.path)
+            else:
+                before_state[df.path] = get_file_content(repo_path, base_ref, df.path)
+                after_state[df.path] = get_file_content(repo_path, head_ref, df.path)
 
-            if not before_state and not after_state:
-                continue
+        if not before_state and not after_state:
+            continue
 
-            examples.append(MinedExample(
-                repo_name=repo_name,
-                instruction=commit.message,
-                before=before_state,
-                after=after_state,
-                diff=commit.diff_text,
-                changed_files=commit.changed_files,
-            ))
+        # Step 3: endpoint quality — meaningful combined instruction.
+        instruction = _synthesize_instruction([c.message for c in arc])
+        if not instruction:
+            continue
+
+        examples.append(MinedExample(
+            repo_name=repo_name,
+            instruction=instruction,
+            before=before_state,
+            after=after_state,
+            diff=diff_text,
+            changed_files=[df.path for df in parsed],
+        ))
 
     return examples
