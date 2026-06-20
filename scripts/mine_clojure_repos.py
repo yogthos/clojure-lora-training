@@ -98,6 +98,11 @@ def parse_args() -> argparse.Namespace:
         "--clone-dir", type=str, default=None,
         help="Directory to clone repos into (default: system temp dir)",
     )
+    parser.add_argument(
+        "--clone-depth", type=int, default=0,
+        help="git clone depth (0 = full history; required for lifecycle "
+             "windowing). Shallow clones skew the 40-80%% percentile window.",
+    )
     return parser.parse_args()
 
 
@@ -115,8 +120,13 @@ def resolve_repos(args: argparse.Namespace) -> List[str]:
     return repos
 
 
-def clone_if_needed(repo: str, clone_dir: str) -> Optional[str]:
-    """Clone a remote repo if needed, return local path or None."""
+def clone_if_needed(repo: str, clone_dir: str, depth: int = 0) -> Optional[str]:
+    """Clone a remote repo if needed, return local path or None.
+
+    depth=0 does a full clone — required for lifecycle windowing, which walks
+    the whole history to find the 40-80% percentile. A shallow clone would only
+    expose the recent tail and skew the window.
+    """
     path = Path(repo)
     if path.is_dir():
         return str(path.resolve())
@@ -133,9 +143,13 @@ def clone_if_needed(repo: str, clone_dir: str) -> Optional[str]:
     if target.exists():
         return str(target)
 
+    clone_cmd = ["git", "clone"]
+    if depth and depth > 0:
+        clone_cmd.append(f"--depth={depth}")
+    clone_cmd += [url, str(target)]
     try:
         subprocess.run(
-            ["git", "clone", "--depth=1000", url, str(target)],
+            clone_cmd,
             check=True, capture_output=True, text=True,
         )
         return str(target)
@@ -159,7 +173,7 @@ def main():
     stats = Counter()
 
     for repo in repos:
-        local_path = clone_if_needed(repo, clone_dir)
+        local_path = clone_if_needed(repo, clone_dir, depth=args.clone_depth)
         if not local_path:
             stats["failed_clone"] += 1
             continue
