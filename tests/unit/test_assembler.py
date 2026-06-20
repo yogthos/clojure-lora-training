@@ -12,8 +12,48 @@ from src.codeflow.assembly.assembler import (
     deduplicate,
     balance_by_type,
     filter_by_length,
+    filter_trivial_diffs,
+    count_changed_lines,
     assemble_dataset,
 )
+
+
+_DIFF_HEAD = "diff --git a/x.clj b/x.clj\n--- a/x.clj\n+++ b/x.clj\n@@ -1,2 +1,2 @@\n"
+
+
+def _diff(added: int, removed: int) -> str:
+    body = "".join(f"+new line {i}\n" for i in range(added))
+    body += "".join(f"-old line {i}\n" for i in range(removed))
+    return _DIFF_HEAD + " context\n" + body
+
+
+class TestCountChangedLines:
+    def test_counts_add_and_remove_excluding_headers(self):
+        # +++/--- file headers must not count as changes.
+        assert count_changed_lines(_diff(3, 2)) == 5
+
+    def test_zero_for_no_changes(self):
+        assert count_changed_lines("just text\n context only\n") == 0
+
+
+class TestFilterTrivialDiffs:
+    def test_drops_git_transitions_below_floor(self):
+        recs = [
+            {"instruction": "big", "output": _diff(5, 5), "source": "git"},
+            {"instruction": "tiny", "output": _diff(1, 0), "source": "git"},
+        ]
+        kept = filter_trivial_diffs(recs, min_changed_lines=4)
+        assert [r["instruction"] for r in kept] == ["big"]
+
+    def test_synthetic_records_are_exempt(self):
+        # Workflow output is not a diff; never filtered on change-count.
+        recs = [{"instruction": "wf", "output": ";; Goal: x\n;; eval: (+ 1 2)",
+                 "source": "synthetic"}]
+        assert filter_trivial_diffs(recs, min_changed_lines=4) == recs
+
+    def test_non_diff_git_record_is_kept(self):
+        recs = [{"instruction": "x", "output": "no diff here", "source": "git"}]
+        assert filter_trivial_diffs(recs, min_changed_lines=4) == recs
 
 
 def _write_jsonl(path: Path, records: list[dict]) -> None:
@@ -98,6 +138,12 @@ class TestClassifyExample:
 
     def test_unknown_defaults_to_refactor(self):
         ex = {"instruction": "do something vague"}
+        assert classify_example(ex) == "refactor"
+
+    def test_docs_folds_into_refactor(self):
+        # docs is too sparse to balance as its own bucket; fold it into refactor
+        # (both are non-behavioral cleanup) so there is no singleton category.
+        ex = {"instruction": "update the readme and fix docstring typos in the comment"}
         assert classify_example(ex) == "refactor"
 
 
@@ -308,3 +354,32 @@ class TestAssembleDataset:
             synth_kept = [r for r in result if r["source"] == "synthetic"]
             assert len(git_kept) == 10        # git capped at max_per_type
             assert len(synth_kept) == 30      # all synthetic survive
+
+    def test_assigns_diverse_system_prompts_by_objective(self):
+        from src.shared import TRANSITION_SYSTEM_PROMPTS, WORKFLOW_SYSTEM_PROMPTS
+        with TemporaryDirectory() as d:
+            dir_path = Path(d)
+            git_dir = dir_path / "git"
+            synth_dir = dir_path / "synth"
+            git_dir.mkdir()
+            synth_dir.mkdir()
+            _write_jsonl(git_dir / "g.jsonl", [
+                {"instruction": f"add feature {i}", "output": "diff"}
+                for i in range(60)
+            ])
+            _write_jsonl(synth_dir / "s.jsonl", [
+                {"instruction": f"build thing {i}", "output": ";; Goal: x"}
+                for i in range(60)
+            ])
+            result = assemble_dataset(
+                git_paths=[git_dir], synth_paths=[synth_dir],
+                output_path=dir_path / "out.jsonl",
+            )
+            git = [r for r in result if r["source"] == "git"]
+            synth = [r for r in result if r["source"] == "synthetic"]
+            # Each objective draws only from its own paraphrase pool...
+            assert all(r["system"] in TRANSITION_SYSTEM_PROMPTS for r in git)
+            assert all(r["system"] in WORKFLOW_SYSTEM_PROMPTS for r in synth)
+            # ...and more than one variant is actually used (no attention collapse).
+            assert len({r["system"] for r in git}) > 1
+            assert len({r["system"] for r in synth}) > 1

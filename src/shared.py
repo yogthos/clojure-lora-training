@@ -49,6 +49,57 @@ _TRANSITION_SYSTEM_PROMPT = (
     "unified diff."
 )
 
+# Paraphrase pools. Using one identical system string across every example
+# invites attention collapse — the model keys on the fixed prompt rather than
+# the task. We assign an equivalent paraphrase per example. Index 0 is the
+# canonical phrasing above. The WORKFLOW variants keep the literal section
+# markers (';; Goal:' etc.) verbatim, since the output format depends on them;
+# only the surrounding prose varies.
+TRANSITION_SYSTEM_PROMPTS = [
+    _TRANSITION_SYSTEM_PROMPT,
+    "You are a Clojure coding agent. Given one or more Clojure source files and "
+    "a description of the change to make, apply it as a unified diff patch in "
+    "git format. Respond with the diff only.",
+    "You are a Clojure coding assistant. You receive the current contents of "
+    "some Clojure files together with a requested change. Produce a git-format "
+    "unified diff that makes the change, and output nothing but the diff.",
+    "Act as a Clojure coding agent. From the given Clojure source files and a "
+    "change description, generate the unified diff (git format) that applies the "
+    "change. Return only the diff.",
+    "You are a Clojure patch-generation agent. Read the provided Clojure source "
+    "and the requested change, then emit a git-style unified diff that performs "
+    "it. Your entire response must be the diff.",
+]
+
+_WORKFLOW_STRUCTURE = (
+    "Structure your response as: ';; Goal:' (the end state), ';; Files:' (each "
+    "file and its purpose), ';; Plan (build order):' (the functions in order), "
+    "';; nREPL session:' (the iterative eval/result steps, including any "
+    "failures and how you recover from them), and ';; apply:' with a unified "
+    "diff of the final working code."
+)
+
+WORKFLOW_SYSTEM_PROMPTS = [
+    _WORKFLOW_SYSTEM_PROMPT,
+    "You are a Clojure coding agent working through an nREPL. Given a user "
+    "request, figure out the goal, decide which files are involved, and outline "
+    "the functions to build in dependency order. Build them one at a time at the "
+    "REPL — write a function, evaluate it, exercise it on sample data, check the "
+    "result, and when it is wrong or throws, fix it and re-run until it works "
+    "before moving on. " + _WORKFLOW_STRUCTURE,
+    "You are a Clojure agent that develops interactively at the REPL. Starting "
+    "from a user request, determine the end goal, lay out the files you need, and "
+    "plan the functions in the order they must be built. Implement each one "
+    "incrementally: define it, run it on examples, inspect what comes back, and "
+    "iterate through any errors until it behaves correctly, then continue to the "
+    "next. " + _WORKFLOW_STRUCTURE,
+    "Act as a Clojure coding agent using nREPL-driven development. From a user "
+    "request, work out what success looks like, identify the files to touch, and "
+    "sketch the build order of the functions. Develop them one by one in the "
+    "REPL — evaluate, test on real inputs, read the output, and repair and re-run "
+    "on failure until each works before advancing. " + _WORKFLOW_STRUCTURE,
+]
+
 # ── JSONL I/O ──────────────────────────────────────────────────────────────
 
 PathOrStr = Union[Path, str]

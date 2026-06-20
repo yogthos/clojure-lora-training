@@ -69,6 +69,14 @@ def parse_args() -> argparse.Namespace:
              "be truncated at train time. Default 50000; pass 0 to disable.",
     )
     parser.add_argument(
+        "--min-changed-lines",
+        type=int,
+        default=4,
+        metavar="N",
+        help="Drop git transitions whose diff changes fewer than N lines "
+             "(low-signal trivial edits). Default 4; pass 0 to disable.",
+    )
+    parser.add_argument(
         "--no-format",
         action="store_true",
         help="Skip LLaMA-Factory format standardization",
@@ -111,6 +119,8 @@ def main() -> int:
     max_chars = args.max_chars or None  # treat 0 as "no limit"
     if max_chars:
         print(f"  Max chars:    {max_chars} (~{max_chars // 3500}K tokens)")
+    if args.min_changed_lines:
+        print(f"  Min Δ lines:  {args.min_changed_lines} (drops trivial diffs)")
 
     # Step 1: Assemble (merge + deduplicate + length-filter + balance)
     records = assemble_dataset(
@@ -119,6 +129,7 @@ def main() -> int:
         output_path=output_path,
         max_per_type=args.max_per_type,
         max_chars=max_chars,
+        min_changed_lines=args.min_changed_lines,
     )
     print(f"  Assembled:    {len(records)} records")
     src_counts = Counter(r.get("source", "unknown") for r in records)

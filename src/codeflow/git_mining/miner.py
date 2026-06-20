@@ -7,6 +7,7 @@ Usage:
 """
 
 import json
+import re
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -316,12 +317,47 @@ def get_lifecycle_commits(
     return window
 
 
+# A GNU-changelog-style entry: optional "* ", a path token (contains "/" or a
+# source extension), then ": <description>". We keep only the description so the
+# instruction reads like a request, not a raw commit log with embedded paths.
+_CHANGELOG_RE = re.compile(r"^\*?\s*([\w./\-]+)\s*:\s*(.*)$")
+_SRC_EXTS = (".clj", ".cljs", ".cljc", ".cljx", ".edn")
+
+
+def _clean_changelog_prefix(line: str) -> str:
+    """Strip a leading ``* path:`` changelog prefix, keeping the description.
+
+    "* src/foo/bar.clj: add retry" -> "add retry". A normal "Title: detail"
+    message (no path before the colon) is returned unchanged.
+    """
+    m = _CHANGELOG_RE.match(line)
+    if not m:
+        return line
+    head, rest = m.group(1), m.group(2).strip()
+    looks_like_path = "/" in head or head.endswith(_SRC_EXTS)
+    if looks_like_path:
+        return rest
+    return line
+
+
+def clean_instruction(instruction: str) -> str:
+    """Re-clean an already-synthesized instruction string.
+
+    Instructions are stored as ``"; "``-joined commit subjects. This re-applies
+    the changelog-prefix cleaning to each segment so data mined before the fix
+    can be repaired at assembly time without re-mining the repositories.
+    """
+    segs = [_clean_changelog_prefix(s.strip()) for s in instruction.split(";")]
+    segs = [s.strip() for s in segs if s and s.strip()]
+    return "; ".join(segs)
+
+
 def _synthesize_instruction(messages: List[str]) -> str:
     """Combine an arc's commit messages into a single instruction.
 
-    Keeps the substantive first line of each commit, drops merge/trivial
-    messages, and dedupes. The arc's combined intent is what the patch
-    accomplishes from R_old to R_new.
+    Keeps the substantive first line of each commit, strips changelog path
+    prefixes, drops merge/trivial messages, and dedupes. The arc's combined
+    intent is what the patch accomplishes from R_old to R_new.
     """
     lines: List[str] = []
     for msg in messages:
@@ -329,6 +365,9 @@ def _synthesize_instruction(messages: List[str]) -> str:
         if not first:
             continue
         if first.startswith("Merge pull request") or first.startswith("Merge branch"):
+            continue
+        first = _clean_changelog_prefix(first)
+        if not first:
             continue
         if not has_meaningful_message(first):
             continue

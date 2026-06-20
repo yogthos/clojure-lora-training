@@ -9,7 +9,13 @@ from collections import Counter
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from ...shared import compute_dedup_key, load_jsonl
+from ...shared import (
+    compute_dedup_key,
+    load_jsonl,
+    TRANSITION_SYSTEM_PROMPTS,
+    WORKFLOW_SYSTEM_PROMPTS,
+)
+from ..git_mining.miner import clean_instruction
 
 # ── Classification keyword sets ──────────────────────────────────────────
 
@@ -73,7 +79,9 @@ def classify_example(example: dict) -> str:
     # Use the highest-scoring category
     best = max(scores, key=scores.get)
     if scores[best] > 0:
-        return best
+        # docs is too sparse to balance as its own bucket; fold it into refactor
+        # (both are non-behavioral cleanup) so there is no singleton category.
+        return "refactor" if best == "docs" else best
     return "refactor"
 
 
@@ -126,6 +134,64 @@ def filter_by_length(
     return [r for r in records if _example_chars(r) <= max_chars]
 
 
+def count_changed_lines(diff: str) -> int:
+    """Count added + removed lines in a unified diff, excluding file headers."""
+    added = sum(
+        1 for ln in diff.splitlines()
+        if ln.startswith("+") and not ln.startswith("+++")
+    )
+    removed = sum(
+        1 for ln in diff.splitlines()
+        if ln.startswith("-") and not ln.startswith("---")
+    )
+    return added + removed
+
+
+def filter_trivial_diffs(
+    records: List[dict],
+    min_changed_lines: int = 4,
+) -> List[dict]:
+    """Drop git transitions whose diff changes fewer than min_changed_lines.
+
+    A one- or two-line diff carries almost no code-flow signal. This targets
+    only diff-shaped outputs; synthetic workflow traces (whose output is a REPL
+    session, not a diff) and any non-diff record pass through untouched.
+
+    Note: we deliberately do NOT filter on input<->output word overlap. For a
+    diff the output is a structural transform of the input, so high word overlap
+    just means "edits existing code" — legitimate, not a copy-collapse risk.
+    """
+    if min_changed_lines <= 0:
+        return records
+    kept = []
+    for r in records:
+        out = r.get("output", "")
+        if r.get("source") == "synthetic" or "diff --git" not in out:
+            kept.append(r)
+        elif count_changed_lines(out) >= min_changed_lines:
+            kept.append(r)
+    return kept
+
+
+def assign_system_prompts(records: List[dict], seed: int = 42) -> List[dict]:
+    """Assign a paraphrased system prompt to each record, by objective.
+
+    Git transitions draw from TRANSITION_SYSTEM_PROMPTS, synthetic workflow
+    traces from WORKFLOW_SYSTEM_PROMPTS. Spreading equivalent phrasings across
+    examples prevents the model from keying on one fixed prompt string
+    (attention collapse) instead of the task. Mutates and returns ``records``.
+    """
+    rng = random.Random(seed)
+    for r in records:
+        pool = (
+            WORKFLOW_SYSTEM_PROMPTS
+            if r.get("source") == "synthetic"
+            else TRANSITION_SYSTEM_PROMPTS
+        )
+        r["system"] = rng.choice(pool)
+    return records
+
+
 def balance_by_type(
     records: List[dict],
     max_per_type: Optional[int] = None,
@@ -169,6 +235,7 @@ def assemble_dataset(
     output_path: Path,
     max_per_type: Optional[int] = None,
     max_chars: Optional[int] = None,
+    min_changed_lines: int = 4,
 ) -> List[dict]:
     """Assemble a complete training dataset from git-mined and synthetic sources.
 
@@ -189,6 +256,8 @@ def assemble_dataset(
         max_per_type: Max records per change type for balancing.
         max_chars: Drop records whose instruction+input+output exceeds this
             many characters (None disables the filter).
+        min_changed_lines: Drop git transitions whose diff changes fewer than
+            this many lines (low-signal trivial edits). 0 disables.
 
     Returns:
         List of assembled records.
@@ -208,8 +277,16 @@ def assemble_dataset(
             rec.setdefault("source", "synthetic")
             records.append(rec)
 
+    # Repair changelog-style instruction prefixes baked into older mined data
+    # (e.g. "* src/foo.clj: do thing") so existing JSONL is fixed without
+    # re-mining. A no-op on already-clean natural-language instructions.
+    for rec in records:
+        if rec.get("instruction"):
+            rec["instruction"] = clean_instruction(rec["instruction"])
+
     records = deduplicate(records)
     records = filter_by_length(records, max_chars=max_chars)
+    records = filter_trivial_diffs(records, min_changed_lines=min_changed_lines)
 
     # Balance only the abundant git-mined pool by change type. The synthetic
     # workflow set is small, curated, and execution-verified to a target count,
@@ -219,6 +296,7 @@ def assemble_dataset(
     synth_records = [r for r in records if r.get("source") == "synthetic"]
     git_records = balance_by_type(git_records, max_per_type=max_per_type)
     records = git_records + synth_records
+    assign_system_prompts(records)
     random.Random(42).shuffle(records)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)

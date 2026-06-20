@@ -227,6 +227,59 @@ class TestTripletSpans:
             assert len(windowed) < len(full)
 
 
+class TestSynthesizeInstruction:
+    """Changelog-style commit messages must not leak file paths into instructions."""
+
+    def _synth(self, msgs):
+        from src.codeflow.git_mining.miner import _synthesize_instruction
+        return _synthesize_instruction(msgs)
+
+    def test_strips_changelog_path_prefix(self):
+        out = self._synth(["* src/main/clojure/foo/bar.clj: add retry logic"])
+        assert out == "add retry logic"
+
+    def test_strips_path_prefix_without_leading_star(self):
+        out = self._synth(["src/foo.cljs: fix nil handling"])
+        assert out == "fix nil handling"
+
+    def test_keeps_plain_messages_with_colons(self):
+        # A normal "Title: detail" message (no path) is untouched.
+        out = self._synth(["Refactor: extract shared middleware"])
+        assert out == "Refactor: extract shared middleware"
+
+    def test_cleans_each_message_in_arc(self):
+        out = self._synth([
+            "* src/a.clj: add retry logic to client",
+            "* test/b.clj: cover timeout handling in specs",
+        ])
+        assert out == "add retry logic to client; cover timeout handling in specs"
+        assert "src/" not in out and "test/" not in out
+
+    def test_drops_changelog_line_with_no_description(self):
+        # A bare "* path:" with nothing after it carries no intent.
+        out = self._synth(["* src/foo.clj:", "Add real feature"])
+        assert out == "Add real feature"
+
+
+class TestCleanInstruction:
+    """Repair already-synthesized instructions without re-mining."""
+
+    def _clean(self, s):
+        from src.codeflow.git_mining.miner import clean_instruction
+        return clean_instruction(s)
+
+    def test_cleans_joined_changelog_segments(self):
+        s = "* src/a.clj: add retry; * test/b.clj: cover timeouts"
+        assert self._clean(s) == "add retry; cover timeouts"
+
+    def test_leaves_clean_instruction_untouched(self):
+        s = "Fix nil handling in parse-args; Add validation"
+        assert self._clean(s) == s
+
+    def test_drops_empty_segments(self):
+        assert self._clean("* src/a.clj: ; real change here") == "real change here"
+
+
 class TestMinedExample:
     """Unit tests for MinedExample structure."""
 
