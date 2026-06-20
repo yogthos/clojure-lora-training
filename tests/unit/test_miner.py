@@ -249,9 +249,14 @@ class TestMinedExample:
         d = ex.to_dict()
         assert d["instruction"] == "Fix nil handling in parse-args"
         assert "src/core.clj" in d["input"]
+        # Output is the transition: a unified diff, no fabricated REPL trace.
         assert "diff --git" in d["output"]
-        # REPL placeholder should be present
-        assert ";; eval:" in d["output"]
+        assert ";; eval:" not in d["output"]
+        assert ";; nREPL" not in d["output"]
+        # Git-mined examples use the transition (patch) system prompt, not the
+        # interactive nREPL one.
+        assert "unified diff" in d["system"].lower()
+        assert "nrepl" not in d["system"].lower()
 
     def test_to_jsonl_line(self):
         ex = MinedExample(
@@ -285,14 +290,14 @@ class TestFormatting:
         assert "(ns app.core)" in formatted
         assert "(defn add [a b] (+ a b))" in formatted
 
-    def test_format_instruction_with_repl(self):
-        from src.codeflow.git_mining.miner import _format_output_with_repl
-        diff = "@@ -1 +1 @@\n-(def x 1)\n+(def x 2)"
-        instruction = "Refactor: rename to meaningful name"
-        files_before = {"src/core.clj": "(def x 1)"}
-        files_after = {"src/core.clj": "(def x 2)"}
-
-        output = _format_output_with_repl(diff, instruction, files_before, files_after)
-        assert ";; nREPL session:" in output
-        assert ";; apply:" in output
-        assert diff in output
+    def test_output_is_raw_transition_diff(self):
+        ex = MinedExample(
+            repo_name="r",
+            instruction="Bump x",
+            before={"src/core.clj": "(def x 1)"},
+            after={"src/core.clj": "(def x 2)"},
+            diff="diff --git a/src/core.clj b/src/core.clj\n@@ -1 +1 @@\n-(def x 1)\n+(def x 2)",
+            changed_files=["src/core.clj"],
+        )
+        # Output is exactly the unified diff — nothing fabricated around it.
+        assert ex.to_dict()["output"] == ex.diff

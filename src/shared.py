@@ -21,6 +21,16 @@ _SYSTEM_PROMPT = (
     "their results, followed by ;; apply: with unified diff patches."
 )
 
+# System prompt for the code-flow transition task: git-mined examples teach how
+# a real change is applied to existing code. There is no REPL trace in git
+# history, so these examples target patch generation directly.
+_TRANSITION_SYSTEM_PROMPT = (
+    "You are a Clojure coding agent. You are given the current state of one or "
+    "more Clojure source files and a description of a change to make. Apply the "
+    "change by producing a unified diff patch in git format. Output only the "
+    "unified diff."
+)
+
 # ── JSONL I/O ──────────────────────────────────────────────────────────────
 
 PathOrStr = Union[Path, str]
