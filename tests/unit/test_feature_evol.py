@@ -16,6 +16,57 @@ from src.codeflow.synthetic.feature_evol import (
 )
 
 
+class _FakeLLM:
+    """Returns a fixed JSON payload for require_json calls."""
+
+    def __init__(self, payload):
+        import json
+        self._payload = json.dumps(payload)
+
+    def call(self, system_prompt, user_prompt, temperature=None,
+             max_tokens=None, require_json=False):
+        return self._payload
+
+
+class TestEvolveAddsNodes:
+    """Regression for the key-mismatch no-op: the LLM returns 'name'-keyed
+    categories, but the code read 'category' and silently dropped them all."""
+
+    def test_breadth_adds_name_keyed_categories(self):
+        tree = build_baseline_tree()
+        before = len(tree.nodes)
+        llm = _FakeLLM([
+            {"name": "web-development", "description": "Ring/Reitit handlers"},
+            {"name": "state-management", "description": "atoms and watchers"},
+        ])
+        evolved = evolve_breadth(tree, llm, EvolConfig())
+        assert len(evolved.nodes) > before
+        assert "web-development" in evolved.nodes
+        assert "state-management" in evolved.nodes
+
+    def test_depth_adds_name_keyed_subcategories(self):
+        tree = build_baseline_tree()
+        before = len(tree.nodes)
+        # Each existing root gets a new subcategory keyed 'name'.
+        llm = _FakeLLM([
+            {"new_subcategories": [{"name": "transducers-advanced",
+                                    "description": "stateful xforms"}]}
+        ])
+        evolved = evolve_depth(tree, llm, EvolConfig())
+        assert len(evolved.nodes) > before
+
+    def test_breadth_skips_existing_and_blank(self):
+        tree = build_baseline_tree()
+        first_root = next(n for n, node in tree.nodes.items() if node.depth == 0)
+        before = len(tree.nodes)
+        llm = _FakeLLM([
+            {"name": first_root},          # already exists -> skip
+            {"description": "no name"},     # blank id -> skip
+        ])
+        evolved = evolve_breadth(tree, llm, EvolConfig())
+        assert len(evolved.nodes) == before
+
+
 class TestEvolConfig:
     def test_defaults(self):
         config = EvolConfig()
