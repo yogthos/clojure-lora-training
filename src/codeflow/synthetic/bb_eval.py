@@ -136,17 +136,18 @@ def eval_forms(
         return []
 
     script = _build_script(forms)
-    tmp = tempfile.NamedTemporaryFile("w", suffix=".clj", delete=False)
-    try:
-        tmp.write(script)
-        tmp.close()
-        proc = subprocess.run(
-            [bb_path, tmp.name],
-            capture_output=True, text=True, errors="replace", timeout=timeout,
-        )
-    except subprocess.TimeoutExpired:
-        return [EvalResult(form=f, ok=False, error="timeout") for f in forms]
-    finally:
-        Path(tmp.name).unlink(missing_ok=True)
+    # Run inside a throwaway working directory so a form that writes a relative
+    # path (spit/io) can't pollute the caller's project; it's removed on exit.
+    with tempfile.TemporaryDirectory() as workdir:
+        script_path = Path(workdir) / "_eval.clj"
+        script_path.write_text(script)
+        try:
+            proc = subprocess.run(
+                [bb_path, str(script_path)],
+                cwd=workdir,
+                capture_output=True, text=True, errors="replace", timeout=timeout,
+            )
+        except subprocess.TimeoutExpired:
+            return [EvalResult(form=f, ok=False, error="timeout") for f in forms]
 
-    return _parse_output(proc.stdout, forms)
+        return _parse_output(proc.stdout, forms)

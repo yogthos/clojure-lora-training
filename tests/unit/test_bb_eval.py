@@ -62,6 +62,13 @@ class TestEvalForms:
         assert r[0].ok is False
         assert "timeout" in r[0].error.lower()
 
+    def test_file_writes_do_not_pollute_cwd(self, tmp_path, monkeypatch):
+        # A form that writes a relative path must not land in the caller's cwd.
+        monkeypatch.chdir(tmp_path)
+        r = eval_forms(['(spit "pollution.txt" "x")'])
+        assert r[0].ok is True
+        assert not (tmp_path / "pollution.txt").exists()
+
 
 def test_bb_available_true_here():
     assert bb_available() is True
