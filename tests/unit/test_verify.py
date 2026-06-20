@@ -7,6 +7,8 @@ from src.codeflow.synthetic.verify import (
     extract_eval_blocks,
     ground_solution,
     verify_and_ground,
+    verify_workflow,
+    _is_definition,
 )
 
 _BB = shutil.which("bb") is not None
@@ -93,3 +95,48 @@ class TestVerifyAndGround:
         g = verify_and_ground(";; apply:\ndiff --git a/x b/x\n")
         assert g.total == 0
         assert g.all_ok is False  # nothing executed -> can't vouch for it
+
+
+class TestIsDefinition:
+    def test_definitions(self):
+        assert _is_definition("(defn f [x] x)")
+        assert _is_definition("(def x 1)")
+        assert _is_definition("(require '[clojure.string :as s])")
+
+    def test_demonstrations(self):
+        assert not _is_definition("(f 5)")
+        assert not _is_definition("(+ 1 2)")
+        assert not _is_definition("(map inc [1 2 3])")
+
+
+@pytest.mark.skipif(not _BB, reason="babashka not installed")
+class TestVerifyWorkflow:
+    def test_intermediate_failure_then_recovery_is_kept(self):
+        # First version of sq is wrong (adds), gets run, then fixed and re-run.
+        sol = (
+            ";; --- Step 1: sq ---\n"
+            ";; eval: (defn sq [x] (+ x x))\n;; result: ?\n"
+            ";; eval: (sq 5)\n;; result: ?\n"          # 10 — wrong, but runs
+            ";; eval: (defn sq [x] (* x x))\n;; result: ?\n"
+            ";; eval: (sq 5)\n;; result: ?\n"          # 25 — correct, final demo
+            ";; apply:\ndiff --git a/c.clj b/c.clj\n@@ -1 +1 @@\n"
+        )
+        g = verify_workflow(sol)
+        assert g.total == 4
+        assert g.reaches_correct_end_state is True   # final demo (sq 5)=25 ok
+        assert "25" in g.solution
+
+    def test_failing_final_demo_is_rejected(self):
+        sol = (
+            ";; eval: (defn f [x] (/ x 0))\n;; result: ?\n"
+            ";; eval: (f 5)\n;; result: ?\n"           # throws — final demo fails
+            ";; apply:\ndiff --git a/c.clj b/c.clj\n"
+        )
+        g = verify_workflow(sol)
+        assert g.reaches_correct_end_state is False
+
+    def test_only_definitions_has_no_end_state(self):
+        sol = ";; eval: (defn f [x] x)\n;; result: ?\n;; apply:\ndiff --git a/x b/x\n"
+        g = verify_workflow(sol)
+        # A definition alone isn't a demonstration of correctness.
+        assert g.reaches_correct_end_state is False

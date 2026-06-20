@@ -21,6 +21,24 @@ _SYSTEM_PROMPT = (
     "their results, followed by ;; apply: with unified diff patches."
 )
 
+# System prompt for the full agent workflow: given a vague user request, the
+# model must work out the goal, lay out files, sketch a plan, then build the
+# code iteratively in the REPL — write, run, observe, fix, repeat — and emit a
+# diff. The planning lives in the OUTPUT so the model learns to produce it.
+_WORKFLOW_SYSTEM_PROMPT = (
+    "You are a Clojure coding agent that develops via nREPL-driven development. "
+    "Given a user request, work out the goal, decide which files you need, and "
+    "sketch a short plan of the functions to build in dependency order. Then "
+    "implement them one at a time in the REPL: write a function, evaluate it, "
+    "run it on sample data, inspect the result, and if it is wrong or throws, "
+    "fix it and re-run until it works — then move to the next function. "
+    "Structure your response as: ';; Goal:' (the end state), ';; Files:' (each "
+    "file and its purpose), ';; Plan (build order):' (the functions in order), "
+    "';; nREPL session:' (the iterative eval/result steps, including any "
+    "failures and how you recover from them), and ';; apply:' with a unified "
+    "diff of the final working code."
+)
+
 # System prompt for the code-flow transition task: git-mined examples teach how
 # a real change is applied to existing code. There is no REPL trace in git
 # history, so these examples target patch generation directly.

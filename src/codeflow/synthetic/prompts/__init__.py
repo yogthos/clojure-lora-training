@@ -24,6 +24,8 @@ EXTRACT_SYSTEM = _load("extract_system")
 QUESTION_SYSTEM = _load("question_system")
 CONSTRUCT_TREE_SYSTEM = _load("construct_tree_system")
 BACKTRANSLATE_SYSTEM = _load("backtranslate_system")
+PLAN_SYSTEM = _load("plan_system")
+WORKFLOW_SYSTEM = _load("workflow_system")
 
 __all__ = [
     "ANALYSIS_SYSTEM",
@@ -34,5 +36,7 @@ __all__ = [
     "DEPTH_SYSTEM",
     "DETAIL_SYSTEM",
     "EXTRACT_SYSTEM",
+    "PLAN_SYSTEM",
     "QUESTION_SYSTEM",
+    "WORKFLOW_SYSTEM",
 ]

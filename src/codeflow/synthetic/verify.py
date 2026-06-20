@@ -45,6 +45,38 @@ class GroundedSolution:
         return self.total > 0 and self.passed == self.total
 
 
+_DEF_PREFIXES = (
+    "def ", "def\n", "defn ", "defn\n", "defn-", "defmacro", "defmulti",
+    "defmethod", "defrecord", "deftype", "defprotocol", "defonce",
+    "require", "ns ", "ns\n", "import", "use ", "in-ns", "refer",
+)
+
+
+def _is_definition(form: str) -> bool:
+    """True if a form just defines/loads something rather than demonstrating it.
+
+    Definitions return a var/nil and so are "ok" trivially; the meaningful
+    end-state signal is whether the last *demonstration* (a call producing a
+    value) ran correctly.
+    """
+    inner = form.lstrip().lstrip("(").lstrip()
+    return inner.startswith(_DEF_PREFIXES)
+
+
+@dataclass
+class GradedWorkflow(GroundedSolution):
+    """A grounded workflow trace plus a tolerant end-state judgement.
+
+    Unlike all_ok, this allows intermediate failures (the write -> fail -> fix
+    arc we want to teach) as long as the final demonstration runs correctly.
+    """
+
+    @property
+    def reaches_correct_end_state(self) -> bool:
+        demos = [r for r in self.results if not _is_definition(r.form)]
+        return bool(demos) and demos[-1].ok
+
+
 def _is_marker(line: str) -> bool:
     return bool(_EVAL_RE.match(line) or _RESULT_RE.match(line) or _APPLY_RE.match(line))
 
@@ -152,6 +184,33 @@ def verify_and_ground(
     grounded = ground_solution(solution, blocks, results)
     passed = sum(1 for r in results if r.ok)
     return GroundedSolution(
+        solution=grounded,
+        total=len(results),
+        passed=passed,
+        results=results,
+    )
+
+
+def verify_workflow(
+    solution: str,
+    timeout: float = 30.0,
+    bb_path: str = "bb",
+) -> GradedWorkflow:
+    """Verify+ground a workflow trace, judging end-state correctness tolerantly.
+
+    Same execution+grounding as verify_and_ground, but returns a GradedWorkflow
+    whose reaches_correct_end_state allows intermediate failures (the taught
+    error->fix arc) provided the final demonstration runs cleanly.
+    """
+    blocks = extract_eval_blocks(solution)
+    forms = [b.form for b in blocks if b.form]
+    if not forms:
+        return GradedWorkflow(solution=solution, total=0, passed=0, results=[])
+
+    results = eval_forms(forms, timeout=timeout, bb_path=bb_path)
+    grounded = ground_solution(solution, blocks, results)
+    passed = sum(1 for r in results if r.ok)
+    return GradedWorkflow(
         solution=grounded,
         total=len(results),
         passed=passed,
