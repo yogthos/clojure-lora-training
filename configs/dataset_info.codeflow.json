@@ -1,0 +1,21 @@
+{
+  "_comment": "Merge these entries into LLaMA-Factory's data/dataset_info.json. Our records are alpaca-style with a system column: {system, instruction, input, output}. Point file_name at the split files produced by scripts/split_codeflow_dataset.py.",
+  "codeflow_train": {
+    "file_name": "codeflow_train.jsonl",
+    "columns": {
+      "prompt": "instruction",
+      "query": "input",
+      "response": "output",
+      "system": "system"
+    }
+  },
+  "codeflow_val": {
+    "file_name": "codeflow_val.jsonl",
+    "columns": {
+      "prompt": "instruction",
+      "query": "input",
+      "response": "output",
+      "system": "system"
+    }
+  }
+}
