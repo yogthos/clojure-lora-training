@@ -8,10 +8,15 @@
 # Run:  llamafactory-cli train configs/codeflow_lora_qwen.yaml
 
 ### model
-# NOTE: confirm the exact HF id + chat template. The bead says "Qwen3.6-27B";
-# set model_name_or_path and template to the real release before launching.
-model_name_or_path: Qwen/Qwen3.6-27B
-trust_remote_code: true
+# CORRECTED from the bead's "Qwen3.6-27B": that id is a real model but it's a
+# MULTIMODAL vision-language model on a new hybrid-attention arch — wrong for
+# code. "Qwen3.6-Coder-27B" (README) does not exist. The right 27-32B code base
+# is Qwen2.5-Coder-32B-Instruct: dense, code-pretrained, 128K native context,
+# Apache-2.0, textbook LoRA support.
+# Alternative: Qwen/Qwen3-Coder-30B-A3B-Instruct (stronger coding but MoE — needs
+# MoE-aware LoRA targets and template: qwen3; see notes below).
+model_name_or_path: Qwen/Qwen2.5-Coder-32B-Instruct
+trust_remote_code: false      # not needed for Qwen2.5/Qwen3 (native in transformers)
 
 ### method
 stage: sft
@@ -37,7 +42,9 @@ neftune_noise_alpha: 5.0
 ### dataset
 dataset: codeflow_train       # registered in data/dataset_info.json (below)
 eval_dataset: codeflow_val    # our own held-out split (stratified, leakage-checked)
-template: qwen                # set to the base model's actual template
+template: qwen                # correct for Qwen2.5-Coder (use qwen3 for Qwen3-Coder)
+train_on_prompt: false        # loss on the completion only, not the prompt (default,
+                              #   but pinned explicitly — critical for SFT quality)
 cutoff_len: 16384             # covers our longest kept trace (~12.5K tokens; the
                               #   assembler already drops >50K-char examples).
                               #   8K (original plan) would truncate the richest
@@ -57,13 +64,17 @@ report_to: tensorboard
 ### train
 per_device_train_batch_size: 1
 gradient_accumulation_steps: 16   # effective batch 16 (x num_gpus)
-learning_rate: 1.0e-4             # lower than the planned 3e-4 — safer on a 27B
-                                  #   with limited data; pair with cosine + warmup
+learning_rate: 1.0e-4             # LLaMA-Factory LoRA default; ~10x the full-FT LR.
+                                  #   Lower than the planned 3e-4 — safer on a 32B
+                                  #   with limited data. Pair with cosine + warmup.
 num_train_epochs: 3.0             # ceiling; early stopping below usually halts at 2-3
 lr_scheduler_type: cosine
-warmup_ratio: 0.03
-bf16: true                        # no quantization noise (important at this rank)
-max_grad_norm: 0.3                # Qwen3 MoE router gradients spike early; clip hard
+warmup_ratio: 0.1                 # ~33 warmup steps of ~335 — stabilizes a short run
+weight_decay: 0.0                 # safe for short SFT (raise to 0.1 only if overfitting)
+bf16: true                        # no quantization noise; bf16 LoRA = full-fidelity
+                                  #   parity with full FT for SFT at this data scale
+max_grad_norm: 1.0                # standard for a DENSE model (use 0.3 only for the
+                                  #   Qwen3-Coder-30B-A3B MoE alternative)
 flash_attn: fa2
 gradient_checkpointing: true
 
