@@ -25,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from src.shared import load_jsonl
 from src.codeflow.synthetic.bb_eval import bb_available
 from src.codeflow.synthetic.prompt_mining import mine_prompts
-from src.codeflow.synthetic.workflow_gen import generate_workflows
+from src.codeflow.synthetic.workflow_gen import generate_workflows_concurrent
 
 
 def parse_args() -> argparse.Namespace:
@@ -43,6 +43,9 @@ def parse_args() -> argparse.Namespace:
                    help="Min fraction of a trace's forms that must run cleanly to keep it")
     p.add_argument("--no-verify-execution", action="store_true",
                    help="Skip babashka execution/grounding (results stay LLM-fabricated)")
+    p.add_argument("--workers", type=int, default=8,
+                   help="Concurrent worker threads (the work is I/O-bound on the "
+                        "LLM API and babashka). Default 8.")
     p.add_argument("--seed", type=int, default=42, help="Shuffle seed for source records")
     return p.parse_args()
 
@@ -89,21 +92,38 @@ def main() -> int:
     prompts = mine_prompts(records, llm, max_prompts=args.target)
     print(f"Mined {len(prompts)} user-style prompts", file=sys.stderr)
 
-    results = generate_workflows(
-        prompts, llm,
-        max_examples=len(prompts),
-        verify=verify,
-        min_pass_rate=args.min_pass_rate,
-    )
+    out = Path(args.output)
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    # Stream each verified trace to disk as it completes, so a long run is
+    # observable and survives interruption with partial results intact.
+    f = open(out, "w")
+
+    def on_result(r):
+        f.write(r.to_jsonl() + "\n")
+        f.flush()
+
+    def on_progress(done, total, kept):
+        if done % 10 == 0 or done == total:
+            print(f"  {done}/{total} prompts processed, {kept} kept "
+                  f"({kept / done * 100:.0f}%)", file=sys.stderr)
+
+    print(f"Generating with {args.workers} workers...", file=sys.stderr)
+    try:
+        results = generate_workflows_concurrent(
+            prompts, llm,
+            max_workers=args.workers,
+            verify=verify,
+            min_pass_rate=args.min_pass_rate,
+            on_result=on_result,
+            on_progress=on_progress,
+        )
+    finally:
+        f.close()
+
     kept = len(results)
     print(f"Generated {kept} verified workflows "
           f"({len(prompts) - kept} dropped)", file=sys.stderr)
-
-    out = Path(args.output)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    with open(out, "w") as f:
-        for r in results:
-            f.write(r.to_jsonl() + "\n")
     print(f"Output: {out} ({kept} records)", file=sys.stderr)
     return 0
 

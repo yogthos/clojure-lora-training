@@ -8,6 +8,9 @@ from src.codeflow.synthetic.workflow_gen import (
     WorkflowResult,
     generate_plan,
     generate_workflow,
+    generate_one,
+    generate_workflows,
+    generate_workflows_concurrent,
     _fallback_plan,
 )
 
@@ -87,3 +90,63 @@ class TestWorkflowResult:
         # The training system prompt frames the agent workflow, not a fixed plan.
         assert "plan" in ex["system"].lower()
         assert ";; Goal:" not in ex["instruction"]  # model must produce the plan
+
+
+_TRACE = (
+    ";; Goal: validate\n"
+    ";; nREPL session:\n;; eval: (+ 1 2)\n;; result: ?\n"
+    ";; apply:\ndiff --git a/x b/x\n"
+)
+
+
+def _prompt(i):
+    return MinedPrompt(
+        user_prompt=f"task {i}", project_context="lib", source_instruction=f"c{i}"
+    )
+
+
+class TestGenerateOne:
+    def test_returns_result_unverified(self):
+        llm = _FakeLLM(plan={"goal": "g", "steps": [{"name": "s"}]}, trace=_TRACE)
+        r = generate_one(_PROMPT, llm, verify=False)
+        assert r is not None
+        assert r.user_prompt == _PROMPT.user_prompt
+        assert ";; Goal:" in r.solution
+
+    def test_drops_empty_solution(self):
+        llm = _FakeLLM(plan={"goal": "g", "steps": [{"name": "s"}]}, trace="   ")
+        assert generate_one(_PROMPT, llm, verify=False) is None
+
+
+class TestConcurrentGeneration:
+    def test_same_kept_set_as_serial(self):
+        prompts = [_prompt(i) for i in range(12)]
+        llm = _FakeLLM(plan={"goal": "g", "steps": [{"name": "s"}]}, trace=_TRACE)
+        serial = generate_workflows(prompts, llm, max_examples=12, verify=False)
+        conc = generate_workflows_concurrent(prompts, llm, max_workers=4, verify=False)
+        assert len(conc) == len(serial) == 12
+        assert {r.user_prompt for r in conc} == {r.user_prompt for r in serial}
+
+    def test_on_result_fires_per_kept_and_on_progress_per_prompt(self):
+        prompts = [_prompt(i) for i in range(10)]
+        llm = _FakeLLM(plan={"goal": "g", "steps": [{"name": "s"}]}, trace=_TRACE)
+        streamed = []
+        progress = []
+        generate_workflows_concurrent(
+            prompts, llm, max_workers=4, verify=False,
+            on_result=lambda r: streamed.append(r),
+            on_progress=lambda done, total, kept: progress.append((done, total, kept)),
+        )
+        assert len(streamed) == 10
+        assert len(progress) == 10            # one tick per completed prompt
+        assert progress[-1][0] == 10 and progress[-1][1] == 10  # done/total
+        assert progress[-1][2] == 10          # final kept count
+
+    def test_worker_exception_is_dropped_not_fatal(self):
+        class _BoomLLM(_FakeLLM):
+            def call(self, *a, **k):
+                raise RuntimeError("boom")
+        prompts = [_prompt(i) for i in range(5)]
+        # Must not raise; all samples drop to None.
+        out = generate_workflows_concurrent(prompts, _BoomLLM(), max_workers=3)
+        assert out == []
