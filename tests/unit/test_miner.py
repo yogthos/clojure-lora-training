@@ -53,6 +53,233 @@ class TestMineRepository:
         assert isinstance(examples, list)
 
 
+class TestNonUtf8Tolerance:
+    """The miner must not crash when git output contains non-UTF-8 bytes.
+
+    Real repos (e.g. babashka) carry files with latin-1/binary bytes; a strict
+    UTF-8 decode of `git show` raised UnicodeDecodeError and dropped the whole
+    repo. git output should be decoded with errors='replace' instead.
+    """
+
+    def _make_repo_with_bad_bytes(self, root: Path) -> None:
+        def git(*args):
+            subprocess.run(["git", "-C", str(root), *args], check=True,
+                           capture_output=True)
+
+        git("init")
+        git("config", "user.email", "t@t")
+        git("config", "user.name", "t")
+        f = root / "core.clj"
+        # First commit: valid Clojure.
+        f.write_bytes(b"(ns app)\n(defn greet [] :hi)\n")
+        git("add", "-A")
+        git("commit", "-m", "add greet")
+        # Second commit: introduce a non-UTF-8 byte (0x9e) into the source.
+        f.write_bytes(b"(ns app)\n(defn greet [] :hi)\n;; \x9e marker\n")
+        git("add", "-A")
+        git("commit", "-m", "fix greet encoding edge case")
+
+    def test_get_commit_diff_tolerates_bad_bytes(self):
+        from src.codeflow.git_mining.miner import get_commit_diff, get_commit_list
+
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            self._make_repo_with_bad_bytes(root)
+            commits = get_commit_list(str(root))
+            # Should not raise UnicodeDecodeError.
+            diff = get_commit_diff(str(root), commits[0].hash)
+            assert isinstance(diff, str)
+
+    def test_get_file_content_tolerates_bad_bytes(self):
+        from src.codeflow.git_mining.miner import get_file_content, get_commit_list
+
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            self._make_repo_with_bad_bytes(root)
+            head = get_commit_list(str(root))[0].hash
+            content = get_file_content(str(root), head, "core.clj")
+            assert isinstance(content, str)
+            assert "marker" in content
+
+    def test_mine_repository_tolerates_bad_bytes(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            self._make_repo_with_bad_bytes(root)
+            examples = mine_repository(str(root), max_commits=20)
+            assert isinstance(examples, list)
+
+
+class TestLifecycleWindowing:
+    """IQuest §3.1: sample commits from the 40-80% percentile of project life,
+    not the most-recent N from HEAD."""
+
+    def _make_linear_repo(self, root: Path, n: int) -> None:
+        def git(*args):
+            subprocess.run(["git", "-C", str(root), *args], check=True,
+                           capture_output=True)
+
+        git("init")
+        git("config", "user.email", "t@t")
+        git("config", "user.name", "t")
+        body = "(ns app)\n"
+        for i in range(1, n + 1):
+            body += f"(defn f-{i} [] {i})\n"
+            (root / "core.clj").write_text(body)
+            git("add", "-A")
+            git("commit", "-m", f"commit {i}: add feature {i} to the namespace")
+
+    def test_window_selects_middle_band(self):
+        from src.codeflow.git_mining.miner import get_lifecycle_commits
+
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            self._make_linear_repo(root, 10)
+            commits = get_lifecycle_commits(str(root), low=0.4, high=0.8)
+            # 10 commits chronological -> indices [4,8) -> commits 5,6,7,8
+            assert len(commits) == 4
+            msgs = " ".join(c.message for c in commits)
+            assert "commit 5:" in msgs and "commit 8:" in msgs
+            assert "commit 1:" not in msgs and "commit 10:" not in msgs
+
+    def test_window_is_chronological(self):
+        from src.codeflow.git_mining.miner import get_lifecycle_commits
+
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            self._make_linear_repo(root, 10)
+            commits = get_lifecycle_commits(str(root), low=0.0, high=1.0)
+            nums = [int(c.message.split()[1].rstrip(":")) for c in commits]
+            assert nums == sorted(nums)  # oldest -> newest
+
+    def test_full_window_keeps_all(self):
+        from src.codeflow.git_mining.miner import get_lifecycle_commits
+
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            self._make_linear_repo(root, 6)
+            assert len(get_lifecycle_commits(str(root), low=0.0, high=1.0)) == 6
+
+
+class TestTripletSpans:
+    """IQuest §3.1: multi-iteration (R_old, P, R_new) triplets via forward spans."""
+
+    def _make_linear_repo(self, root: Path, n: int) -> None:
+        def git(*args):
+            subprocess.run(["git", "-C", str(root), *args], check=True,
+                           capture_output=True)
+
+        git("init")
+        git("config", "user.email", "t@t")
+        git("config", "user.name", "t")
+        body = "(ns app)\n"
+        for i in range(1, n + 1):
+            body += f"(defn f-{i} [] {i})\n"
+            (root / "core.clj").write_text(body)
+            git("add", "-A")
+            git("commit", "-m", f"commit {i}: add feature {i} to the namespace")
+
+    def test_span_produces_cumulative_diff(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            self._make_linear_repo(root, 9)
+            examples = mine_repository(
+                str(root), lifecycle_window=(0.0, 1.0), triplet_span=3,
+            )
+            assert len(examples) >= 1
+            # The first arc spans commits 1-3, so its diff adds f-1, f-2 AND f-3
+            # (a single-commit diff would only add one).
+            first = examples[0]
+            assert "f-1" in first.diff and "f-2" in first.diff and "f-3" in first.diff
+
+    def test_span_one_is_per_commit(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            self._make_linear_repo(root, 6)
+            examples = mine_repository(
+                str(root), lifecycle_window=(0.0, 1.0), triplet_span=1,
+            )
+            # One example per commit; each diff adds exactly its own feature.
+            assert len(examples) == 6
+            assert "f-1" in examples[0].diff and "f-2" not in examples[0].diff
+
+    def test_instruction_combines_arc_messages(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            self._make_linear_repo(root, 6)
+            examples = mine_repository(
+                str(root), lifecycle_window=(0.0, 1.0), triplet_span=3,
+            )
+            # Arc instruction should reference more than one commit's intent.
+            assert any(
+                ex.instruction.count("feature") >= 2 for ex in examples
+            )
+
+    def test_lifecycle_window_limits_arcs(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            self._make_linear_repo(root, 10)
+            windowed = mine_repository(
+                str(root), lifecycle_window=(0.4, 0.8), triplet_span=2,
+            )
+            full = mine_repository(
+                str(root), lifecycle_window=(0.0, 1.0), triplet_span=2,
+            )
+            assert len(windowed) < len(full)
+
+
+class TestSynthesizeInstruction:
+    """Changelog-style commit messages must not leak file paths into instructions."""
+
+    def _synth(self, msgs):
+        from src.codeflow.git_mining.miner import _synthesize_instruction
+        return _synthesize_instruction(msgs)
+
+    def test_strips_changelog_path_prefix(self):
+        out = self._synth(["* src/main/clojure/foo/bar.clj: add retry logic"])
+        assert out == "add retry logic"
+
+    def test_strips_path_prefix_without_leading_star(self):
+        out = self._synth(["src/foo.cljs: fix nil handling"])
+        assert out == "fix nil handling"
+
+    def test_keeps_plain_messages_with_colons(self):
+        # A normal "Title: detail" message (no path) is untouched.
+        out = self._synth(["Refactor: extract shared middleware"])
+        assert out == "Refactor: extract shared middleware"
+
+    def test_cleans_each_message_in_arc(self):
+        out = self._synth([
+            "* src/a.clj: add retry logic to client",
+            "* test/b.clj: cover timeout handling in specs",
+        ])
+        assert out == "add retry logic to client; cover timeout handling in specs"
+        assert "src/" not in out and "test/" not in out
+
+    def test_drops_changelog_line_with_no_description(self):
+        # A bare "* path:" with nothing after it carries no intent.
+        out = self._synth(["* src/foo.clj:", "Add real feature"])
+        assert out == "Add real feature"
+
+
+class TestCleanInstruction:
+    """Repair already-synthesized instructions without re-mining."""
+
+    def _clean(self, s):
+        from src.codeflow.git_mining.miner import clean_instruction
+        return clean_instruction(s)
+
+    def test_cleans_joined_changelog_segments(self):
+        s = "* src/a.clj: add retry; * test/b.clj: cover timeouts"
+        assert self._clean(s) == "add retry; cover timeouts"
+
+    def test_leaves_clean_instruction_untouched(self):
+        s = "Fix nil handling in parse-args; Add validation"
+        assert self._clean(s) == s
+
+    def test_drops_empty_segments(self):
+        assert self._clean("* src/a.clj: ; real change here") == "real change here"
+
+
 class TestMinedExample:
     """Unit tests for MinedExample structure."""
 
@@ -75,9 +302,14 @@ class TestMinedExample:
         d = ex.to_dict()
         assert d["instruction"] == "Fix nil handling in parse-args"
         assert "src/core.clj" in d["input"]
+        # Output is the transition: a unified diff, no fabricated REPL trace.
         assert "diff --git" in d["output"]
-        # REPL placeholder should be present
-        assert ";; eval:" in d["output"]
+        assert ";; eval:" not in d["output"]
+        assert ";; nREPL" not in d["output"]
+        # Git-mined examples use the transition (patch) system prompt, not the
+        # interactive nREPL one.
+        assert "unified diff" in d["system"].lower()
+        assert "nrepl" not in d["system"].lower()
 
     def test_to_jsonl_line(self):
         ex = MinedExample(
@@ -96,6 +328,59 @@ class TestMinedExample:
         assert "output" in parsed
 
 
+class TestBeforeStateTrimming:
+    """Input should show only the changed top-level forms (+ ns), not whole
+    files — otherwise multi-file arcs blow past the training context window."""
+
+    _BEFORE = (
+        "(ns app)\n\n"
+        "(defn f-1 [] 1)\n\n"
+        "(defn f-2 [] 2)\n\n"
+        "(defn f-3 [] 3)\n"
+    )
+    _DIFF = (
+        "diff --git a/core.clj b/core.clj\n"
+        "--- a/core.clj\n+++ b/core.clj\n"
+        "@@ -5,1 +5,1 @@\n-(defn f-2 [] 2)\n+(defn f-2 [] 22)\n"
+    )
+
+    def test_form_spans_identify_top_level_forms(self):
+        from src.codeflow.git_mining.miner import _top_level_form_spans
+        spans = _top_level_form_spans(self._BEFORE)
+        # (ns app) at line 1, f-1 at 3, f-2 at 5, f-3 at 7
+        starts = [s for (s, e, t) in spans]
+        assert starts == [1, 3, 5, 7]
+
+    def test_keeps_changed_form_and_ns_drops_others(self):
+        from src.codeflow.git_mining.miner import _format_changed_regions
+        out = _format_changed_regions({"core.clj": self._BEFORE}, self._DIFF)
+        assert "(ns app)" in out          # ns kept for context
+        assert "f-2" in out               # the changed form kept
+        assert "f-1" not in out           # untouched forms dropped
+        assert "f-3" not in out
+        assert "core.clj" in out          # file header preserved
+
+    def test_trimmed_is_smaller_than_whole_file(self):
+        from src.codeflow.git_mining.miner import (
+            _format_changed_regions, _format_file_tree,
+        )
+        trimmed = _format_changed_regions({"core.clj": self._BEFORE}, self._DIFF)
+        whole = _format_file_tree({"core.clj": self._BEFORE})
+        assert len(trimmed) < len(whole)
+
+    def test_to_dict_input_is_trimmed(self):
+        ex = MinedExample(
+            repo_name="r",
+            instruction="bump f-2",
+            before={"core.clj": self._BEFORE},
+            after={"core.clj": self._BEFORE.replace("[] 2)", "[] 22)")},
+            diff=self._DIFF,
+            changed_files=["core.clj"],
+        )
+        d = ex.to_dict()
+        assert "f-2" in d["input"] and "f-1" not in d["input"]
+
+
 class TestFormatting:
     """Test the output formatting utilities."""
 
@@ -111,14 +396,14 @@ class TestFormatting:
         assert "(ns app.core)" in formatted
         assert "(defn add [a b] (+ a b))" in formatted
 
-    def test_format_instruction_with_repl(self):
-        from src.codeflow.git_mining.miner import _format_output_with_repl
-        diff = "@@ -1 +1 @@\n-(def x 1)\n+(def x 2)"
-        instruction = "Refactor: rename to meaningful name"
-        files_before = {"src/core.clj": "(def x 1)"}
-        files_after = {"src/core.clj": "(def x 2)"}
-
-        output = _format_output_with_repl(diff, instruction, files_before, files_after)
-        assert ";; nREPL session:" in output
-        assert ";; apply:" in output
-        assert diff in output
+    def test_output_is_raw_transition_diff(self):
+        ex = MinedExample(
+            repo_name="r",
+            instruction="Bump x",
+            before={"src/core.clj": "(def x 1)"},
+            after={"src/core.clj": "(def x 2)"},
+            diff="diff --git a/src/core.clj b/src/core.clj\n@@ -1 +1 @@\n-(def x 1)\n+(def x 2)",
+            changed_files=["src/core.clj"],
+        )
+        # Output is exactly the unified diff — nothing fabricated around it.
+        assert ex.to_dict()["output"] == ex.diff

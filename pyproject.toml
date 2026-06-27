@@ -27,8 +27,8 @@ test = ["pytest>=7.0.0", "pytest-cov>=4.0.0"]
 dev = ["clojure-lora-trainer[test,api,mlx,json-repair]"]
 
 [project.scripts]
-clj-lora-mine = "src.git_mining.miner:mine_repository"
-clj-lora-assemble = "src.assembly.assembler:assemble_dataset"
+clj-lora-mine = "src.codeflow.git_mining.miner:mine_repository"
+clj-lora-assemble = "src.codeflow.assembly.assembler:assemble_dataset"
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -46,4 +46,4 @@ markers = [
 addopts = ["-v", "--tb=short", "--strict-markers"]
 
 [tool.setuptools.package-data]
-"synthetic" = ["prompts/*.txt"]
+"codeflow.synthetic" = ["prompts/*.txt"]

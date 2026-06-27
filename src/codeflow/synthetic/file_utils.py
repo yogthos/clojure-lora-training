@@ -13,6 +13,10 @@ import random
 from pathlib import Path
 from typing import List, Optional, Set, Tuple
 
+from ...shared import count_records  # noqa: F401 — re-exported for backward compat
+from ...shared import load_jsonl as read_jsonl
+from ...shared import write_jsonl
+
 
 def sort_jsonl(
     input_path: str,
@@ -61,8 +65,6 @@ def merge_jsonl(
         Path to merged output.
     """
     seen_signatures: Set[str] = set()
-    total_kept = 0
-    total_skipped = 0
 
     with open(output_path, "w") as out:
         for path in input_paths:
@@ -79,12 +81,10 @@ def merge_jsonl(
                     if deduplicate:
                         sig = _record_signature(record, dedup_key)
                         if sig in seen_signatures:
-                            total_skipped += 1
                             continue
                         seen_signatures.add(sig)
 
                     out.write(json.dumps(record, ensure_ascii=False) + "\n")
-                    total_kept += 1
 
     return output_path
 
@@ -193,11 +193,6 @@ def split_jsonl(
     write_jsonl(val, val_path)
 
     return train_path, val_path
-
-
-from ...shared import count_records  # noqa: F401 — re-exported for backward compat
-from ...shared import load_jsonl as read_jsonl
-from ...shared import write_jsonl
 
 
 def _record_signature(record: dict, key: str = "instruction") -> str:

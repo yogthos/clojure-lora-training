@@ -43,17 +43,17 @@ import module2; print('OK')
 "
 ```
 
-Then run relevant tests:
+Then run relevant tests. Add `-p no:cacheprovider` to every pytest invocation during a refactor — it disables the on-disk cache so a stale `.pytest_cache` can never mask an import failure or reuse a stale collected test:
 ```bash
-uv run python -m pytest tests/unit/test_changed_modules*.py -x -q --tb=short
+uv run python -m pytest tests/unit/test_changed_modules*.py -x -q --tb=short -p no:cacheprovider
 ```
 
-**Session-end gate (non-negotiable):** before declaring the refactor done, run the FULL unit suite — not just changed modules — and require zero failures:
+**Full-suite-per-round (when the suite is fast):** on this project the full `tests/unit` suite (~837 tests, 5 skipped) runs quickly, so prefer running the FULL suite every round rather than just the changed modules — stronger regression coverage, and it's the same command as the session-end gate:
 ```bash
-uv run python -m pytest tests/unit/ -x -q --tb=short \
-  --ignore=tests/unit/test_content_classifier.py --ignore=tests/unit/test_transfer.py
+uv run python -m pytest tests/unit -q --tb=short -p no:cacheprovider
 ```
-Per-round targeted tests catch regressions early; the full suite at the end is the hard gate. The `--ignore`s drop the spaCy-dependent tests (see Pitfalls).
+
+**Session-end gate (non-negotiable):** before declaring the refactor done, run the FULL unit suite and require zero failures. If spaCy (`en_core_web_sm`) is NOT installed, add `--ignore=tests/unit/test_content_classifier.py --ignore=tests/unit/test_transfer.py` to drop the spaCy-dependent tests (see Pitfalls); if spaCy IS installed, run everything.
 
 ## Pitfalls
 

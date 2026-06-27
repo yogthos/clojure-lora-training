@@ -129,8 +129,28 @@ def parse_args() -> argparse.Namespace:
         help="Skip coreset selection",
     )
     parser.add_argument(
+        "--no-verify-execution", action="store_true",
+        help="Skip running generated REPL forms through babashka (by default "
+             "forms are executed, results grounded, and failing solutions dropped)",
+    )
+    parser.add_argument(
+        "--min-pass-rate", type=float, default=0.8,
+        help="Min fraction of a solution's forms that must run cleanly to keep it",
+    )
+    parser.add_argument(
         "--val-split", type=float, default=0.05,
         help="Fraction for validation split",
+    )
+    parser.add_argument(
+        "--temperature", type=float, default=1.0,
+        help="Distribution-reweighting temperature for feature sampling "
+             "(EpiCoder Eq 1). 1.0=proportional; >1 smooths toward uniform so "
+             "underrepresented features get more tasks; <1 sharpens.",
+    )
+    parser.add_argument(
+        "--temperatures", type=float, nargs="+", default=None, metavar="T",
+        help="Mix several reweighting temperatures (e.g. --temperatures 0.7 1.0 "
+             "2.0). The task budget is split across them. Overrides --temperature.",
     )
     parser.add_argument(
         "--stats", action="store_true",
@@ -154,7 +174,7 @@ def setup_llm() -> "LLMProvider":
         from src.llm.deepseek import DeepSeekProvider
         config = LLMProviderConfig(
             api_key=os.environ.get("DEEPSEEK_API_KEY", ""),
-            base_url=os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1"),
+            base_url=os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
             model=os.environ.get("DEEPSEEK_MODEL", "deepseek-chat"),
             max_tokens=4096,
             temperature=0.7,
@@ -254,19 +274,30 @@ def step_generate_tasks(args, tree: FeatureTree, llm) -> List[GeneratedTask]:
         tree, llm,
         tasks_per_node=3,
         max_total=args.target,
+        temperature=args.temperature,
+        temperatures=args.temperatures,
     )
     return tasks
 
 
 def step_generate_code(args, tasks: List[GeneratedTask], llm) -> List[CodeGenResult]:
     """Step 5: Generate REPL-driven code solutions."""
+    from src.codeflow.synthetic.bb_eval import bb_available
+
+    verify = not args.no_verify_execution and bb_available()
+    if not args.no_verify_execution and not verify:
+        print("  WARNING: babashka (bb) not found — skipping execution "
+              "verification (results stay LLM-fabricated)", file=sys.stderr)
+
     task_dicts = [t.to_dict() for t in tasks]
     results = generate_training_examples(
         task_dicts, llm,
         max_examples=args.target,
+        verify=verify,
+        min_pass_rate=args.min_pass_rate,
     )
 
-    # Validate and filter
+    # Final structural gate (verification already dropped non-runnable solutions).
     valid = [r for r in results if validate_solution(r.solution)]
     return valid
 

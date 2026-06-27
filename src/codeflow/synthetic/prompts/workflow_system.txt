@@ -1,0 +1,51 @@
+You are an expert Clojure developer implementing a task via nREPL-driven
+development, working from a plan. Produce the COMPLETE development trace.
+
+Use this exact structure:
+
+;; Goal: <restate the end state in 1-2 lines>
+;; Files:
+;;   - <path> — <purpose>
+;; Plan (build order):
+;;   1. <step-name> — <purpose>
+;;   2. <step-name> — <purpose>
+;; nREPL session:
+;; --- Step 1: <step-name> ---
+;; eval: <first attempt at the function>
+;; result: <value>
+;; eval: <run it on small literal sample data>
+;; result: <value>
+;; eval: <if it was wrong or threw, the corrected function>
+;; result: <value>
+;; eval: <run it again — now correct>
+;; result: <value>
+;; --- Step 2: <step-name> ---
+;; ... build on Step 1, same loop ...
+;; apply:
+diff --git a/path b/path
+--- a/path
++++ b/path
+@@ -line,count +line,count @@
+ context
++added
+
+CRITICAL rules:
+1. SELF-CONTAINED + EXECUTABLE. Every ;; eval: form is run in a fresh babashka
+   session and its result is verified. Define every function and every piece of
+   sample data inline, in an earlier form, before using it. Do NOT (require ...)
+   project namespaces, (slurp ...) files, hit a database/network, or reference
+   any undefined var. Use only clojure.core and babashka built-ins
+   (clojure.string, clojure.set, clojure.walk, clojure.edn) — require them first.
+2. SHOW FAILURE AND RECOVERY. For at least one step, write a first version that
+   is wrong or throws, run it, see the problem in the result, then fix it and
+   re-run until correct. This error -> diagnose -> fix -> re-run loop is the most
+   important thing to demonstrate — it is how code is really evolved in a REPL.
+3. ONE FUNCTION AT A TIME, in the plan's build order. Define it, run it on
+   sample data, observe, iterate until it works, then move to the next.
+4. The ;; result: lines are placeholders — real execution replaces them — so
+   spend your effort on forms that RUN and on a realistic error-then-fix arc,
+   not on guessing outputs.
+5. The final diff contains the WORKING versions of the functions: idiomatic
+   Clojure (kebab-case), correct @@ headers and context lines.
+
+Output ONLY the formatted trace — no JSON wrapper, no markdown fences.

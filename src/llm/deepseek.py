@@ -31,7 +31,12 @@ class DeepSeekProvider(LLMProvider):
         if not config.api_key:
             raise ValueError("DeepSeek API key is required")
 
-        self.base_url = config.base_url.rstrip("/") or "https://api.deepseek.com"
+        base = (config.base_url or "https://api.deepseek.com").rstrip("/")
+        # The endpoint is built as base + "/v1/chat/completions"; tolerate a
+        # caller that already included "/v1" so we don't produce "/v1/v1/...".
+        if base.endswith("/v1"):
+            base = base[: -len("/v1")]
+        self.base_url = base
         self.headers = {
             "Authorization": f"Bearer {config.api_key}",
             "Content-Type": "application/json"
@@ -49,6 +54,10 @@ class DeepSeekProvider(LLMProvider):
     @property
     def provider_name(self) -> str:
         return "deepseek"
+
+    def _chat_url(self) -> str:
+        """Full chat-completions endpoint for the configured base_url."""
+        return f"{self.base_url}/v1/chat/completions"
 
     def estimate_tokens(self, text: str) -> int:
         """Estimate token count using tiktoken or fallback to character count."""
@@ -75,7 +84,7 @@ class DeepSeekProvider(LLMProvider):
             logit_bias: Optional dict mapping token IDs (as strings) to bias values.
                        Values from -100 (ban) to 100 (force).
         """
-        url = f"{self.base_url}/v1/chat/completions"
+        url = self._chat_url()
 
         # Build request payload
         payload = {

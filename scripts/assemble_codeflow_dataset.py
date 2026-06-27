@@ -16,6 +16,7 @@ Usage:
 import argparse
 import json
 import sys
+from collections import Counter
 from pathlib import Path
 
 from src.codeflow.assembly.assembler import assemble_dataset
@@ -59,6 +60,23 @@ def parse_args() -> argparse.Namespace:
         help="Max records per change type for balancing (default: size of smallest type)",
     )
     parser.add_argument(
+        "--max-chars",
+        type=int,
+        default=50000,
+        metavar="N",
+        help="Drop records whose instruction+input+output exceeds N chars "
+             "(~N/3500 tokens). Filters oversized git-mined examples that would "
+             "be truncated at train time. Default 50000; pass 0 to disable.",
+    )
+    parser.add_argument(
+        "--min-changed-lines",
+        type=int,
+        default=4,
+        metavar="N",
+        help="Drop git transitions whose diff changes fewer than N lines "
+             "(low-signal trivial edits). Default 4; pass 0 to disable.",
+    )
+    parser.add_argument(
         "--no-format",
         action="store_true",
         help="Skip LLaMA-Factory format standardization",
@@ -98,15 +116,26 @@ def main() -> int:
     print(f"  Output:       {output_path}")
     if args.max_per_type:
         print(f"  Max/type:     {args.max_per_type}")
+    max_chars = args.max_chars or None  # treat 0 as "no limit"
+    if max_chars:
+        print(f"  Max chars:    {max_chars} (~{max_chars // 3500}K tokens)")
+    if args.min_changed_lines:
+        print(f"  Min Δ lines:  {args.min_changed_lines} (drops trivial diffs)")
 
-    # Step 1: Assemble (merge + deduplicate + balance)
+    # Step 1: Assemble (merge + deduplicate + length-filter + balance)
     records = assemble_dataset(
         git_paths=git_paths,
         synth_paths=synth_paths,
         output_path=output_path,
         max_per_type=args.max_per_type,
+        max_chars=max_chars,
+        min_changed_lines=args.min_changed_lines,
     )
     print(f"  Assembled:    {len(records)} records")
+    src_counts = Counter(r.get("source", "unknown") for r in records)
+    if len(src_counts) > 1 or "unknown" not in src_counts:
+        print("  By source:    " + ", ".join(
+            f"{src}={n}" for src, n in sorted(src_counts.items())))
 
     # Step 2: Format for LLaMA-Factory
     if not args.no_format:

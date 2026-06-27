@@ -33,6 +33,22 @@ class EvolConfig:
 from .prompts import BREADTH_SYSTEM as _BREADTH_SYSTEM, DEPTH_SYSTEM as _DEPTH_SYSTEM, DETAIL_SYSTEM as _DETAIL_SYSTEM
 
 
+def _node_id(d: dict) -> str:
+    """Slug id for an evolved node, tolerant of the LLM's key choice.
+
+    The models return categories/subcategories keyed 'name' (sometimes
+    'category', 'id', or 'label'); reading only one of these silently dropped
+    every evolved node.
+    """
+    if not isinstance(d, dict):
+        return ""
+    for key in ("category", "name", "id", "label"):
+        v = d.get(key, "")
+        if isinstance(v, str) and v.strip():
+            return v.strip().lower().replace(" ", "-")
+    return ""
+
+
 def evolve_breadth(
     tree: FeatureTree,
     llm: LLMProvider,
@@ -72,7 +88,7 @@ def evolve_breadth(
     # Add new categories to tree
     added = 0
     for cat in new_categories[:config.max_breadth_nodes]:
-        cat_id = cat.get("category", "").lower().replace(" ", "-")
+        cat_id = _node_id(cat)
         if not cat_id or cat_id in tree.nodes:
             continue
 
@@ -88,7 +104,7 @@ def evolve_breadth(
 
         # Add subcategories
         for sub in cat.get("subcategories", [])[:config.max_depth_nodes]:
-            sub_id = sub.get("id", "").lower().replace(" ", "-")
+            sub_id = _node_id(sub)
             if not sub_id:
                 continue
             sub_name = f"{cat_id}/{sub_id}"
@@ -156,10 +172,16 @@ def evolve_depth(
 
         added = 0
         for s in suggestions:
-            for new_sub in s.get("new_subcategories", []):
+            if not isinstance(s, dict):
+                continue
+            # Accept a {new_subcategories: [...]} wrapper or a bare subcategory.
+            subs = s.get("new_subcategories") or s.get("subcategories")
+            if not subs:
+                subs = [s] if _node_id(s) else []
+            for new_sub in subs:
                 if added >= config.max_depth_nodes:
                     break
-                sub_id = new_sub.get("id", "").lower().replace(" ", "-")
+                sub_id = _node_id(new_sub)
                 if not sub_id:
                     continue
                 sub_name = f"{cat_name}/{sub_id}"

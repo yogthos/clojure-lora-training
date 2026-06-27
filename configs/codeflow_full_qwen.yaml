@@ -1,0 +1,72 @@
+# FULL-parameter bf16 SFT config for the Clojure code-flow model (LLaMA-Factory).
+#
+# ⚠️ READ FIRST — is this worth it?
+# Research consensus (Biderman et al. "LoRA Learns Less and Forgets Less";
+# Thinking Machines "LoRA Without Regret"; scaling-laws-for-forgetting) is that
+# for narrow instruction SFT on a SMALL dataset (~1,788 examples), a bf16 LoRA on
+# all linear layers reaches FULL-FIDELITY PARITY with full fine-tuning — while
+# full FT here:
+#   - needs an 8x80GB GPU node (ZeRO-3/FSDP) vs 1 GPU for LoRA (~4-8x GPU-hours),
+#   - carries HIGH catastrophic-forgetting risk: forgetting scales UP with model
+#     size and DOWN with dataset size, so a 27B on ~1.8K examples is the worst
+#     combination — it overfits to low loss and degrades the base model.
+# So prefer configs/codeflow_lora_qwen.yaml. This file exists for an explicit
+# A/B comparison; if you run it, treat it as experimental and eval against the
+# LoRA on held-out tasks (not just eval_loss).
+#
+# Launch (distributed, required):
+#   FORCE_TORCHRUN=1 llamafactory-cli train configs/codeflow_full_qwen.yaml
+
+### model
+model_name_or_path: Qwen/Qwen3.6-27B   # confirm transformers >=4.57.1 + qwen3_6 template
+trust_remote_code: true
+
+### method
+stage: sft
+do_train: true
+finetuning_type: full
+# ZeRO-3 shards params + grads + optimizer states across GPUs (mandatory: ~430GB
+# of state for a 27B at 16B/param). Use ds_z3_offload_config.json to fit on fewer
+# GPUs at a large throughput cost. FSDP FULL_SHARD is the equivalent alternative.
+deepspeed: examples/deepspeed/ds_z3_config.json
+
+### dataset
+dataset: codeflow_train
+eval_dataset: codeflow_val
+template: qwen3_6             # confirm exact string in your LLaMA-Factory build
+train_on_prompt: false
+cutoff_len: 16384             # well within Qwen3.6's ~256K native context
+preprocessing_num_workers: 8
+overwrite_cache: true
+
+### output
+output_dir: outputs/codeflow-full-qwen
+logging_steps: 5
+save_steps: 50
+plot_loss: true
+report_to: tensorboard
+
+### train  — full-FT hyperparameters differ sharply from LoRA
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 8       # effective batch 8 x num_gpus (aim 64-128 total)
+learning_rate: 7.0e-6                # ~10-15x LOWER than LoRA's 1e-4. Qwen's own
+                                     #   full-FT examples use 5e-6-7e-6; a high LR
+                                     #   here is a direct forgetting trigger.
+num_train_epochs: 2.0                # 1-2 only; do NOT exceed 3 on this data size
+lr_scheduler_type: cosine
+warmup_ratio: 0.1
+weight_decay: 0.0
+bf16: true
+max_grad_norm: 1.0
+flash_attn: auto                     # Qwen3.6 hybrid linear attention may not take FA2
+gradient_checkpointing: true         # mandatory at 27B; ~20-30% slower, big savings
+
+### eval + early stopping (stop early — overfitting is the main risk here)
+per_device_eval_batch_size: 1
+eval_strategy: steps
+eval_steps: 25
+load_best_model_at_end: true
+metric_for_best_model: eval_loss
+greater_is_better: false
+# CLI/callback:  --early_stopping_patience 2   (tighter than LoRA — full FT
+#   overfits faster; consider also freezing embeddings + lowest layers)

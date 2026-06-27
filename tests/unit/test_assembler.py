@@ -11,8 +11,49 @@ from src.codeflow.assembly.assembler import (
     classify_example,
     deduplicate,
     balance_by_type,
+    filter_by_length,
+    filter_trivial_diffs,
+    count_changed_lines,
     assemble_dataset,
 )
+
+
+_DIFF_HEAD = "diff --git a/x.clj b/x.clj\n--- a/x.clj\n+++ b/x.clj\n@@ -1,2 +1,2 @@\n"
+
+
+def _diff(added: int, removed: int) -> str:
+    body = "".join(f"+new line {i}\n" for i in range(added))
+    body += "".join(f"-old line {i}\n" for i in range(removed))
+    return _DIFF_HEAD + " context\n" + body
+
+
+class TestCountChangedLines:
+    def test_counts_add_and_remove_excluding_headers(self):
+        # +++/--- file headers must not count as changes.
+        assert count_changed_lines(_diff(3, 2)) == 5
+
+    def test_zero_for_no_changes(self):
+        assert count_changed_lines("just text\n context only\n") == 0
+
+
+class TestFilterTrivialDiffs:
+    def test_drops_git_transitions_below_floor(self):
+        recs = [
+            {"instruction": "big", "output": _diff(5, 5), "source": "git"},
+            {"instruction": "tiny", "output": _diff(1, 0), "source": "git"},
+        ]
+        kept = filter_trivial_diffs(recs, min_changed_lines=4)
+        assert [r["instruction"] for r in kept] == ["big"]
+
+    def test_synthetic_records_are_exempt(self):
+        # Workflow output is not a diff; never filtered on change-count.
+        recs = [{"instruction": "wf", "output": ";; Goal: x\n;; eval: (+ 1 2)",
+                 "source": "synthetic"}]
+        assert filter_trivial_diffs(recs, min_changed_lines=4) == recs
+
+    def test_non_diff_git_record_is_kept(self):
+        recs = [{"instruction": "x", "output": "no diff here", "source": "git"}]
+        assert filter_trivial_diffs(recs, min_changed_lines=4) == recs
 
 
 def _write_jsonl(path: Path, records: list[dict]) -> None:
@@ -99,6 +140,12 @@ class TestClassifyExample:
         ex = {"instruction": "do something vague"}
         assert classify_example(ex) == "refactor"
 
+    def test_docs_folds_into_refactor(self):
+        # docs is too sparse to balance as its own bucket; fold it into refactor
+        # (both are non-behavioral cleanup) so there is no singleton category.
+        ex = {"instruction": "update the readme and fix docstring typos in the comment"}
+        assert classify_example(ex) == "refactor"
+
 
 class TestDeduplicate:
     def test_removes_exact_duplicates(self):
@@ -141,6 +188,38 @@ class TestBalanceByType:
         assert len(result) == len(recs)  # default max computed from smallest type
 
 
+class TestFilterByLength:
+    def test_drops_oversize_records(self):
+        recs = [
+            {"instruction": "small", "input": "x" * 10, "output": "y" * 10},
+            {"instruction": "huge", "input": "x" * 5000, "output": "y" * 5000},
+        ]
+        result = filter_by_length(recs, max_chars=1000)
+        assert len(result) == 1
+        assert result[0]["instruction"] == "small"
+
+    def test_none_keeps_all(self):
+        recs = [
+            {"instruction": "a", "input": "x" * 100000, "output": "y"},
+            {"instruction": "b", "input": "z", "output": "w"},
+        ]
+        assert len(filter_by_length(recs, max_chars=None)) == 2
+
+    def test_measures_combined_fields(self):
+        # input alone is under the cap, but input+output together exceed it
+        rec = {"instruction": "i", "input": "x" * 600, "output": "y" * 600}
+        assert filter_by_length([rec], max_chars=1000) == []
+        assert filter_by_length([rec], max_chars=2000) == [rec]
+
+    def test_boundary_is_inclusive(self):
+        # exactly at the cap is kept
+        rec = {"instruction": "", "input": "x" * 500, "output": "y" * 500}
+        assert filter_by_length([rec], max_chars=1000) == [rec]
+
+    def test_empty_input(self):
+        assert filter_by_length([], max_chars=1000) == []
+
+
 class TestAssembleDataset:
     def test_merges_and_deduplicates(self):
         with TemporaryDirectory() as d:
@@ -166,6 +245,68 @@ class TestAssembleDataset:
             )
             assert len(result) == 2
 
+    def test_drops_oversize_before_balancing(self):
+        with TemporaryDirectory() as d:
+            dir_path = Path(d)
+            git_dir = dir_path / "git"
+            synth_dir = dir_path / "synth"
+            git_dir.mkdir()
+            synth_dir.mkdir()
+
+            _write_jsonl(git_dir / "out.jsonl", [
+                {"instruction": "fix small bug", "input": "x", "output": "diff1"},
+                {"instruction": "fix huge bug", "input": "x" * 9000, "output": "diff2"},
+            ])
+            _write_jsonl(synth_dir / "out.jsonl", [])
+
+            output = dir_path / "merged.jsonl"
+            result = assemble_dataset(
+                git_paths=[git_dir],
+                synth_paths=[synth_dir],
+                output_path=output,
+                max_chars=1000,
+            )
+            assert len(result) == 1
+            assert result[0]["instruction"] == "fix small bug"
+
+    def test_tags_record_source(self):
+        with TemporaryDirectory() as d:
+            dir_path = Path(d)
+            git_dir = dir_path / "git"
+            synth_dir = dir_path / "synth"
+            git_dir.mkdir()
+            synth_dir.mkdir()
+            _write_jsonl(git_dir / "g.jsonl", [
+                {"instruction": "fix null bug", "output": "diff-g"},
+            ])
+            _write_jsonl(synth_dir / "s.jsonl", [
+                {"instruction": "add feature endpoint", "output": "diff-s"},
+            ])
+            result = assemble_dataset(
+                git_paths=[git_dir], synth_paths=[synth_dir],
+                output_path=dir_path / "out.jsonl",
+            )
+            by_instr = {r["instruction"]: r["source"] for r in result}
+            assert by_instr["fix null bug"] == "git"
+            assert by_instr["add feature endpoint"] == "synthetic"
+
+    def test_dup_across_sources_keeps_git(self):
+        with TemporaryDirectory() as d:
+            dir_path = Path(d)
+            git_dir = dir_path / "git"
+            synth_dir = dir_path / "synth"
+            git_dir.mkdir()
+            synth_dir.mkdir()
+            dup = {"instruction": "fix null bug", "output": "same-diff"}
+            _write_jsonl(git_dir / "g.jsonl", [dict(dup)])
+            _write_jsonl(synth_dir / "s.jsonl", [dict(dup)])
+            result = assemble_dataset(
+                git_paths=[git_dir], synth_paths=[synth_dir],
+                output_path=dir_path / "out.jsonl",
+            )
+            assert len(result) == 1
+            assert result[0]["source"] == "git"  # git loaded first, wins dedup
+
     def test_handles_empty_inputs(self):
         with TemporaryDirectory() as d:
             dir_path = Path(d)
@@ -181,3 +322,64 @@ class TestAssembleDataset:
                 output_path=output,
             )
             assert len(result) == 0
+
+    def test_synthetic_exempt_from_type_cap(self):
+        # The per-type cap exists to tame the abundant git pool; the curated,
+        # verified synthetic workflow set should survive in full, not get
+        # diluted by random sampling inside saturated change-type buckets.
+        with TemporaryDirectory() as d:
+            dir_path = Path(d)
+            git_dir = dir_path / "git"
+            synth_dir = dir_path / "synth"
+            git_dir.mkdir()
+            synth_dir.mkdir()
+
+            # 100 git bug-fix records (one dominant change type).
+            _write_jsonl(git_dir / "g.jsonl", [
+                {"instruction": f"fix bug {i}", "output": "diff"}
+                for i in range(100)
+            ])
+            # 30 synthetic records that also classify as bug-fix.
+            _write_jsonl(synth_dir / "s.jsonl", [
+                {"instruction": f"resolve crash {i}", "output": "diff"}
+                for i in range(30)
+            ])
+
+            result = assemble_dataset(
+                git_paths=[git_dir], synth_paths=[synth_dir],
+                output_path=dir_path / "out.jsonl",
+                max_per_type=10,
+            )
+            git_kept = [r for r in result if r["source"] == "git"]
+            synth_kept = [r for r in result if r["source"] == "synthetic"]
+            assert len(git_kept) == 10        # git capped at max_per_type
+            assert len(synth_kept) == 30      # all synthetic survive
+
+    def test_assigns_diverse_system_prompts_by_objective(self):
+        from src.shared import TRANSITION_SYSTEM_PROMPTS, WORKFLOW_SYSTEM_PROMPTS
+        with TemporaryDirectory() as d:
+            dir_path = Path(d)
+            git_dir = dir_path / "git"
+            synth_dir = dir_path / "synth"
+            git_dir.mkdir()
+            synth_dir.mkdir()
+            _write_jsonl(git_dir / "g.jsonl", [
+                {"instruction": f"add feature {i}", "output": "diff"}
+                for i in range(60)
+            ])
+            _write_jsonl(synth_dir / "s.jsonl", [
+                {"instruction": f"build thing {i}", "output": ";; Goal: x"}
+                for i in range(60)
+            ])
+            result = assemble_dataset(
+                git_paths=[git_dir], synth_paths=[synth_dir],
+                output_path=dir_path / "out.jsonl",
+            )
+            git = [r for r in result if r["source"] == "git"]
+            synth = [r for r in result if r["source"] == "synthetic"]
+            # Each objective draws only from its own paraphrase pool...
+            assert all(r["system"] in TRANSITION_SYSTEM_PROMPTS for r in git)
+            assert all(r["system"] in WORKFLOW_SYSTEM_PROMPTS for r in synth)
+            # ...and more than one variant is actually used (no attention collapse).
+            assert len({r["system"] for r in git}) > 1
+            assert len({r["system"] for r in synth}) > 1

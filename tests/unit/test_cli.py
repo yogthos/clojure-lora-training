@@ -106,10 +106,16 @@ class TestMainIntegration:
                         "diff --git a/src/handler.clj b/src/handler.clj\n"
                         "--- a/src/handler.clj\n"
                         "+++ b/src/handler.clj\n"
-                        "@@ -10,4 +10,4 @@\n"
+                        "@@ -10,6 +10,8 @@\n"
                         " (defn app [request]\n"
-                        "-  (-> request wrap-params wrap-json-body)\n"
-                        "+  (-> request wrap-params (comp wrap-json-response wrap-json-body)))\n"
+                        "-  (-> request wrap-params wrap-json-body))\n"
+                        "-\n"
+                        "-(def handler app)\n"
+                        "+  (-> request\n"
+                        "+      wrap-params\n"
+                        "+      (comp wrap-json-response wrap-json-body)))\n"
+                        "+\n"
+                        "+(def handler (wrap-defaults app))\n"
                     ),
                     "source": "git",
                 },
@@ -128,10 +134,16 @@ class TestMainIntegration:
                         "diff --git a/src/handler.clj b/src/handler.clj\n"
                         "--- a/src/handler.clj\n"
                         "+++ b/src/handler.clj\n"
-                        "@@ -10,4 +10,4 @@\n"
+                        "@@ -10,6 +10,8 @@\n"
                         " (defn app [request]\n"
-                        "-  (handle-that-may-be-nil request)\n"
-                        "+  (some-> request handle-that-may-be-nil))\n"
+                        "-  (handle-that-may-be-nil request))\n"
+                        "-\n"
+                        "-(def handler app)\n"
+                        "+  (some-> request\n"
+                        "+          validate\n"
+                        "+          handle-that-may-be-nil))\n"
+                        "+\n"
+                        "+(def handler (wrap-errors app))\n"
                     ),
                     "source": "synth",
                 },

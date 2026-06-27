@@ -9,9 +9,78 @@ Adapted from EpiCoder's utils/tree.py. Utilities for:
 
 import random
 from collections import Counter
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 from .construct_tree import FeatureTree, FeatureTreeNode
+
+
+def reweight_frequencies(freqs: Sequence[float], t: float) -> List[float]:
+    """Reweight a frequency distribution by temperature (EpiCoder Eq 1).
+
+        p'_i = exp(log p_i / t) / sum_j exp(log p_j / t)
+
+    Since exp(log p_i / t) = p_i**(1/t) and the normalizing constant cancels,
+    this is equivalent to f_i**(1/t) / sum_j f_j**(1/t) on the raw frequencies.
+
+    t=1 leaves the distribution unchanged. t>1 smooths it toward uniform,
+    giving underrepresented features more sampling probability (the point of
+    reweighting — high-frequency-but-easy features stop dominating). t<1
+    sharpens it toward the mode.
+
+    Zero-frequency entries stay at zero. An all-zero (or empty-after-zero)
+    input is treated as uniform. Raises ValueError for non-positive t.
+    """
+    if t <= 0:
+        raise ValueError(f"temperature must be positive, got {t}")
+    n = len(freqs)
+    if n == 0:
+        return []
+
+    powered = [f ** (1.0 / t) if f > 0 else 0.0 for f in freqs]
+    total = sum(powered)
+    if total <= 0:
+        # No positive frequency to weight by — fall back to uniform.
+        return [1.0 / n] * n
+    return [p / total for p in powered]
+
+
+def allocate_by_reweighted_frequency(
+    freqs: Sequence[float],
+    total: int,
+    t: float,
+    min_each: int = 0,
+) -> List[int]:
+    """Distribute ``total`` integer slots across buckets by reweighted frequency.
+
+    Applies Eq 1 reweighting at temperature ``t`` to ``freqs``, then converts
+    the resulting probabilities into integer counts that sum exactly to
+    ``total`` using largest-remainder rounding. ``min_each`` reserves a floor
+    for every bucket first (so sparse features keep baseline coverage), with
+    the remainder allocated by the reweighted distribution.
+    """
+    n = len(freqs)
+    if n == 0:
+        return []
+    if total <= 0:
+        return [0] * n
+
+    floor = min(min_each, total // n) if n else 0
+    base = [floor] * n
+    remaining = total - floor * n
+    if remaining <= 0:
+        return base
+
+    probs = reweight_frequencies(freqs, t)
+    raw = [p * remaining for p in probs]
+    counts = [int(x) for x in raw]
+    # Distribute the rounding remainder to the largest fractional parts.
+    leftover = remaining - sum(counts)
+    if leftover > 0:
+        order = sorted(range(n), key=lambda i: raw[i] - counts[i], reverse=True)
+        for i in order[:leftover]:
+            counts[i] += 1
+
+    return [base[i] + counts[i] for i in range(n)]
 
 
 def sample_nodes(

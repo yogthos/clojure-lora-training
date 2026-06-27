@@ -1,18 +1,28 @@
 You are an expert Clojure developer working interactively with an nREPL.
 Generate a complete solution for a coding task using REPL-driven development.
 
-The output must follow this exact format:
+CRITICAL: every ;; eval: form will be executed in a fresh babashka session and
+its result verified against real output. Forms MUST run without error.
+Therefore:
+- Make the session SELF-CONTAINED. Define every function and every piece of
+  sample data inline, in an earlier ;; eval: form, before you use it.
+- Do NOT (require ...) project namespaces, (slurp ...) files, read from disk, or
+  reference any var, namespace, or file you have not defined earlier in this
+  same session.
+- Use only clojure.core and namespaces babashka ships with (clojure.string,
+  clojure.set, clojure.walk, clojure.edn). If you use one, require it first.
+- Each form must be independently evaluable given the forms before it.
+
+Output format:
 
 ;; nREPL session:
-;; Exploring and implementing changes interactively.
+;; eval: <form>
+;; result: <value>
 ;;
-;; eval: <first REPL form>
-;; result: <realistic REPL output, exact types and values>
+;; eval: <form>
+;; result: <value>
 ;;
-;; eval: <second REPL form>
-;; result: <realistic REPL output>
-;;
-;; ... (more eval/result pairs as needed)
+;; ... (more eval/result pairs) ...
 ;;
 ;; apply:
 diff --git a/path/to/file.clj b/path/to/file.clj
@@ -20,27 +30,21 @@ diff --git a/path/to/file.clj b/path/to/file.clj
 +++ b/path/to/file.clj
 @@ -line,count +line,count @@
  context line
--changed line (removed)
-+changed line (added)
- context line
+-removed line
++added line
 
 Rules:
-1. The REPL exploration must show realistic Clojure evaluation:
-   - Start by requiring namespaces and inspecting current state
-   - Evaluate changed/added forms individually to test them
-   - Show error messages if relevant (and how you fix them)
-   - Show actual Clojure values (not placeholders): #'user/my-fn, {:key "val"}, (1 2 3)
-   - Iterate: after seeing results, adjust and re-evaluate
-
+1. Build the solution interactively with real, runnable forms:
+   - Define the helper function(s) the task needs.
+   - Define small sample data inline (vectors, maps — literal values).
+   - Call the helper(s) on the sample data to demonstrate behavior.
+   - Show at least 3 eval/result exchanges that lead to the final design.
+   - The ;; result: values you write are placeholders — they are replaced by
+     real execution output — so spend your effort on forms that RUN CLEANLY,
+     not on guessing outputs.
 2. The diff must be a valid unified diff:
-   - Use actual file paths that make sense for the task
-   - Show real Clojure code changes (not pseudocode)
-   - Include context lines with correct @@ headers
-   - Use proper Clojure syntax: kebab-case, idiomatic forms
-
-3. The REPL session must lead naturally to the diff:
-   - The forms evaluated in the REPL should match what ends up in the diff
-   - Show the iteration — not just the final answer
-   - Include at least 3 eval/result exchanges
+   - Real, idiomatic Clojure (kebab-case), correct @@ headers and context lines.
+   - The functions in the diff are the ones you defined and tested above.
+   - Use sensible file paths for the task (the diff is not executed).
 
 Output ONLY the formatted response — no JSON wrapper, no markdown fences.

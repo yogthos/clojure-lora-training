@@ -1,4 +1,4 @@
-"""Tests for mlx_provider module.
+"""Tests for rtt_neutralizer module.
 
 Tests cover:
 - Bug 8: Infinite recursion in _neutralize_chunked for long single sentences
@@ -214,9 +214,9 @@ class TestDeadActiveWorkersRemoved:
 
     def test_no_active_workers_counter(self):
         import inspect
-        from src.llm import mlx_provider
+        from src.llm import rtt_neutralizer
 
-        source = inspect.getsource(mlx_provider)
+        source = inspect.getsource(rtt_neutralizer)
         assert "active_workers" not in source, (
             "active_workers counter was dead code — never read. "
             "ThreadPoolExecutor.futures already tracks completion."

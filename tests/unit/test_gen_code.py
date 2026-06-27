@@ -1,15 +1,71 @@
 """Tests for synthetic data generation: gen_code.py"""
 
 import json
+import shutil
 import pytest
 from src.codeflow.synthetic.gen_code import (
     CodeGenResult,
     generate_analysis,
     generate_code,
+    generate_training_examples,
     validate_solution,
     _fallback_analysis,
     _fallback_code,
 )
+
+
+class _FakeLLM:
+    """Returns a fixed solution for the code pass, stub analysis for JSON."""
+
+    def __init__(self, solution: str):
+        self.solution = solution
+
+    def call(self, system_prompt, user_prompt, temperature=None,
+             max_tokens=None, require_json=False):
+        if require_json:
+            return json.dumps({"files_affected": ["src/core.clj"],
+                               "repl_exploration": []})
+        return self.solution
+
+
+@pytest.mark.skipif(shutil.which("bb") is None, reason="babashka not installed")
+class TestExecutionVerification:
+    _GOOD = (
+        ";; nREPL session:\n"
+        ";; eval: (defn sq [x] (* x x))\n;; result: WRONG\n"
+        ";; eval: (sq 5)\n;; result: WRONG\n"
+        ";; apply:\ndiff --git a/core.clj b/core.clj\n@@ -1 +1 @@\n+x\n"
+    )
+    _BAD = (
+        ";; eval: (require 'nope.phantom.core)\n;; result: nil\n"
+        ";; apply:\ndiff --git a/x b/x\n@@ -1 +1 @@\n+x\n"
+    )
+
+    def test_verified_solution_is_grounded(self):
+        results = generate_training_examples(
+            [{"instruction": "square"}], _FakeLLM(self._GOOD),
+            verify=True, min_pass_rate=1.0,
+        )
+        assert len(results) == 1
+        assert results[0].verified
+        assert results[0].pass_rate == 1.0
+        assert "25" in results[0].solution        # real result, grounded
+        assert "WRONG" not in results[0].solution
+
+    def test_low_pass_rate_is_filtered_out(self):
+        results = generate_training_examples(
+            [{"instruction": "phantom"}], _FakeLLM(self._BAD),
+            verify=True, min_pass_rate=0.9,
+        )
+        assert results == []
+
+    def test_verify_false_keeps_solution_unchanged(self):
+        results = generate_training_examples(
+            [{"instruction": "phantom"}], _FakeLLM(self._BAD),
+            verify=False,
+        )
+        assert len(results) == 1
+        assert not results[0].verified
 
 
 class TestCodeGenResult:

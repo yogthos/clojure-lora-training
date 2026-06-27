@@ -1,0 +1,94 @@
+# LoRA SFT config for the Clojure code-flow LoRA (LLaMA-Factory).
+#
+# Refines the Phase-4 preset (bead qp8.2/qp8.3) against the actual assembled
+# dataset (1881 examples: 1788 train / 93 val, two objectives) and the
+# overfitting findings from the text-style-transfer training docs.
+#
+# Deviations from the original preset, with reasoning, are noted inline.
+# Run:  llamafactory-cli train configs/codeflow_lora_qwen.yaml
+
+### model
+# Qwen3.6-27B — current-gen coding model (newer arch than Qwen2.5/Qwen3:
+# hybrid linear attention + MTP, ~256K native context).
+# CONFIRM BEFORE LAUNCH (newer arch, post-dates the configs in older tooling):
+#   - transformers >= 4.57.1 (required for the qwen3_5/qwen3_6 architecture)
+#   - LLaMA-Factory recent enough to ship the qwen3_6 template
+model_name_or_path: Qwen/Qwen3.6-27B
+trust_remote_code: true       # newer arch; keep on unless transformers has it native
+
+### method
+stage: sft
+do_train: true
+finetuning_type: lora
+lora_target: all              # all linear layers — needed to carry both objectives
+
+# Rank: 32, not the originally-planned 64. At 1881 examples, rank 64 gives only
+# ~29 examples/rank overall and ~14 for the workflow objective (below the
+# 18-ex/rank "minimum viable" the style study found). Rank 32 lands at ~59/28
+# (production / above-minimum) — enough capacity for Clojure idioms without
+# memorizing the set. If output comes back verbatim, drop to 16; if it underfits
+# the breadth of idioms, raise to 48.
+lora_rank: 32
+lora_alpha: 64                # alpha/rank = 2.0 effective scaling (standard)
+use_rslora: false             # avoids the alpha/sqrt(rank) gradient-explosion
+                              #   gotcha (alpha=rank+rsLoRA -> ~sqrt(rank)x -> NaN)
+lora_dropout: 0.1             # prevents verbatim memorization at this rank
+
+# Embedding noise — forces generalized patterns over memorized phrasing.
+neftune_noise_alpha: 5.0
+
+### dataset
+dataset: codeflow_train       # registered in data/dataset_info.json (below)
+eval_dataset: codeflow_val    # our own held-out split (stratified, leakage-checked)
+template: qwen3_6             # Qwen3.6 chat template (confirm exact string in your
+                              #   LLaMA-Factory build; qwen3_5/qwen3_6 both exist)
+train_on_prompt: false        # loss on the completion only, not the prompt (default,
+                              #   but pinned explicitly — critical for SFT quality)
+cutoff_len: 16384             # covers our longest kept trace (~12.5K tokens; the
+                              #   assembler already drops >50K-char examples).
+                              #   Well within Qwen3.6's ~256K native context.
+                              #   8K (original plan) would truncate the richest
+                              #   p90 workflow traces and waste them.
+neat_packing: true            # block-diagonal packing: efficiency without letting
+                              #   examples attend across the boundary
+preprocessing_num_workers: 8
+overwrite_cache: true
+
+### output
+output_dir: outputs/codeflow-lora-qwen-r32
+logging_steps: 5
+save_steps: 50
+plot_loss: true
+report_to: tensorboard
+
+### train
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 16   # effective batch 16 (x num_gpus)
+learning_rate: 1.0e-4             # LLaMA-Factory LoRA default; ~10x the full-FT LR.
+                                  #   Lower than the planned 3e-4 — safer on a 32B
+                                  #   with limited data. Pair with cosine + warmup.
+num_train_epochs: 3.0             # ceiling; early stopping below usually halts at 2-3
+lr_scheduler_type: cosine
+warmup_ratio: 0.1                 # ~33 warmup steps of ~335 — stabilizes a short run
+weight_decay: 0.0                 # safe for short SFT (raise to 0.1 only if overfitting)
+bf16: true                        # no quantization noise; bf16 LoRA = full-fidelity
+                                  #   parity with full FT for SFT at this data scale
+max_grad_norm: 1.0                # standard for a dense model
+flash_attn: auto                  # CONFIRM: Qwen3.6 uses hybrid LINEAR attention on
+                                  #   most layers, which doesn't take standard FA2.
+                                  #   'auto' lets the model pick per-layer; only force
+                                  #   fa2 if the model card says the full-attn layers
+                                  #   support it.
+gradient_checkpointing: true
+
+### eval + early stopping
+per_device_eval_batch_size: 1
+eval_strategy: steps
+eval_steps: 25                    # ~335 total steps at eff-batch 16 -> ~13 evals,
+                                  #   fine enough for early stopping (save_steps
+                                  #   must stay a multiple of this)
+load_best_model_at_end: true
+metric_for_best_model: eval_loss
+greater_is_better: false
+# Provided via CLI/callback (LLaMA-Factory):
+#   --early_stopping_patience 3   # stop if eval_loss rises 3 evals running

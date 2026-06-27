@@ -10,10 +10,13 @@ from src.codeflow.synthetic.gen_question import (
     GeneratedTask,
     _build_task_prompt,
     _generate_fallback_tasks,
+    _split_budget,
     generate_tasks_from_node,
+    generate_tasks_from_tree,
     format_task_for_training,
     filter_tasks_by_difficulty,
 )
+from src.codeflow.synthetic.construct_tree import FeatureTree
 
 
 class TestGeneratedTask:
@@ -134,3 +137,75 @@ class TestFilterTasks:
         filtered = filter_tasks_by_difficulty(tasks, ["beginner", "intermediate"])
         assert len(filtered) == 2
         assert all(t.difficulty in ("beginner", "intermediate") for t in filtered)
+
+
+class TestSplitBudget:
+    def test_even_split(self):
+        assert _split_budget(10, 2) == [5, 5]
+
+    def test_uneven_split_front_loaded(self):
+        assert _split_budget(10, 3) == [4, 3, 3]
+        assert sum(_split_budget(10, 3)) == 10
+
+    def test_zero_parts(self):
+        assert _split_budget(10, 0) == []
+
+
+def _two_node_tree(dense_features: int, sparse_features: int) -> FeatureTree:
+    """A tree with one dense and one sparse subcategory node (depth 1)."""
+    tree = FeatureTree(name="t")
+    feat = lambda i: {"feature_type": "x", "name": f"f{i}", "description": "d"}
+    tree.nodes["dense"] = FeatureTreeNode(
+        name="dense", depth=1, node_type="subcategory",
+        features=[feat(i) for i in range(dense_features)],
+    )
+    tree.nodes["sparse"] = FeatureTreeNode(
+        name="sparse", depth=1, node_type="subcategory",
+        features=[feat(i) for i in range(sparse_features)],
+    )
+    return tree
+
+
+class TestGenerateTasksTemperature:
+    """Reweighting controls how the task budget spreads across nodes."""
+
+    def _allocation(self, monkeypatch, tree, **kwargs):
+        # Stub the per-node generator to just record how many tasks each node
+        # was asked for, so we observe the allocation without calling an LLM.
+        calls = {}
+
+        def fake_node_gen(node, llm, count):
+            calls[node.name] = calls.get(node.name, 0) + count
+            return [
+                GeneratedTask(task_type="feature", instruction=f"{node.name}-{i}",
+                              feature_used="f")
+                for i in range(count)
+            ]
+
+        monkeypatch.setattr(
+            "src.codeflow.synthetic.gen_question.generate_tasks_from_node",
+            fake_node_gen,
+        )
+        generate_tasks_from_tree(tree, llm=None, tasks_per_node=0, **kwargs)
+        return calls
+
+    def test_high_temperature_boosts_sparse_node(self, monkeypatch):
+        tree = _two_node_tree(dense_features=30, sparse_features=1)
+        cold = self._allocation(monkeypatch, tree, max_total=40, temperature=0.5)
+        hot = self._allocation(monkeypatch, tree, max_total=40, temperature=8.0)
+        # The rare node gets a larger share of the budget when smoothed.
+        assert hot.get("sparse", 0) > cold.get("sparse", 0)
+        assert hot.get("dense", 0) < cold.get("dense", 0)
+
+    def test_empty_tree_returns_no_tasks(self, monkeypatch):
+        tree = FeatureTree(name="empty")
+        assert self._allocation(monkeypatch, tree, max_total=10) == {}
+
+    def test_multiple_temperatures_mix(self, monkeypatch):
+        tree = _two_node_tree(dense_features=30, sparse_features=1)
+        mixed = self._allocation(
+            monkeypatch, tree, max_total=40, temperatures=[0.5, 8.0]
+        )
+        # Both nodes get work when mixing a sharp and a smooth temperature.
+        assert mixed.get("dense", 0) > 0
+        assert mixed.get("sparse", 0) > 0
