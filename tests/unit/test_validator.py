@@ -52,7 +52,7 @@ class TestCheckDiffStructure:
         diff = """diff --git a/src/core.clj b/src/core.clj
 --- a/src/core.clj
 +++ b/src/core.clj
-@@ -10,6 +10,8 @@
+@@ -10,3 +10,3 @@
  unchanged line
 -removed line
 +added line
@@ -64,14 +64,14 @@ class TestCheckDiffStructure:
         diff = """diff --git a/a.clj b/a.clj
 --- a/a.clj
 +++ b/a.clj
-@@ -1,3 +1,3 @@
+@@ -1,1 +1,1 @@
 -old
 +new
 
 diff --git a/b.clj b/b.clj
 --- a/b.clj
 +++ b/b.clj
-@@ -5,4 +5,4 @@
+@@ -5,1 +5,1 @@
 -old2
 +new2"""
         errors = check_diff_structure(diff)
@@ -138,7 +138,7 @@ class TestValidateExample:
                 "diff --git a/src/handler.clj b/src/handler.clj\n"
                 "--- a/src/handler.clj\n"
                 "+++ b/src/handler.clj\n"
-                "@@ -10,6 +10,8 @@\n"
+                "@@ -10,3 +10,4 @@\n"
                 " (defn app [request]\n"
                 "-  (-> request\n"
                 "+  (-> request\n"
@@ -208,3 +208,71 @@ class TestValidateJSONLFile:
             summary = validate_jsonl_file(in_path, out_path)
             assert summary["total"] == 1
             assert out_path.exists()
+
+
+class TestStrictDiffGate:
+    """A corrupt diff makes a record invalid no matter how well it scores."""
+
+    GOOD = (
+        "diff --git a/src/app/core.clj b/src/app/core.clj\n"
+        "--- a/src/app/core.clj\n"
+        "+++ b/src/app/core.clj\n"
+        "@@ -1,2 +1,2 @@\n"
+        " (ns app.core)\n"
+        "-(defn handler [req] nil)\n"
+        "+(defn handler [req] {:status 200})\n"
+    )
+
+    def _ex(self, output):
+        return {
+            "instruction": "Fix the ring handler in app.core to return a 200 response map",
+            "input": "",
+            "output": output,
+        }
+
+    def test_good_diff_is_valid(self):
+        from src.codeflow.assembly.validator import validate_example
+        assert validate_example(self._ex(self.GOOD)).is_valid
+
+    def test_bad_hunk_counts_are_invalid(self):
+        from src.codeflow.assembly.validator import validate_example
+        bad = self.GOOD.replace("@@ -1,2 +1,2 @@", "@@ -1,4 +1,4 @@")
+        vr = validate_example(self._ex(bad))
+        assert not vr.is_valid
+        assert vr.diff_errors
+
+    def test_workflow_without_apply_marker_is_invalid(self):
+        from src.codeflow.assembly.validator import validate_example
+        out = ";; eval: (+ 1 2)\n;; result: 3\n" + self.GOOD
+        assert not validate_example(self._ex(out)).is_valid
+
+    def test_minus_sign_alone_is_not_a_change(self):
+        from src.codeflow.assembly.validator import check_diff_structure
+        d = "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n x-y\n"
+        assert check_diff_structure(d)
+
+
+class TestValidateJsonlFiltering:
+    def test_invalid_records_are_removed_from_output(self, tmp_path):
+        from src.codeflow.assembly.validator import validate_jsonl_file
+        from src.shared import load_jsonl, write_jsonl
+        good = {
+            "instruction": "Fix the ring handler in app.core to return a 200 response map",
+            "input": "",
+            "output": TestStrictDiffGate.GOOD,
+        }
+        bad = dict(good, output=TestStrictDiffGate.GOOD.replace("@@ -1,2 +1,2 @@", "@@ -1,9 +1,9 @@"))
+        src = tmp_path / "in.jsonl"
+        write_jsonl([good, bad, good], src)
+        out = tmp_path / "out.jsonl"
+        summary = validate_jsonl_file(src, tmp_path / "report.json", filtered_path=out)
+        assert summary["invalid"] == 1
+        assert len(load_jsonl(out)) == 2
+
+    def test_report_only_mode_writes_no_filtered_file(self, tmp_path):
+        from src.codeflow.assembly.validator import validate_jsonl_file
+        from src.shared import write_jsonl
+        src = tmp_path / "in.jsonl"
+        write_jsonl([{"instruction": "x", "output": "y"}], src)
+        validate_jsonl_file(src, tmp_path / "report.json")
+        assert not (tmp_path / "out.jsonl").exists()

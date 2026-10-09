@@ -132,7 +132,8 @@ class DeepSeekProvider(LLMProvider):
             if "choices" not in data or len(data["choices"]) == 0:
                 raise LLMResponseError("No choices in DeepSeek response")
 
-            content = data["choices"][0].get("message", {}).get("content", "")
+            choice = data["choices"][0]
+            content = choice.get("message", {}).get("content", "")
             if not content:
                 raise LLMResponseError("Empty content in DeepSeek response")
 
@@ -143,7 +144,8 @@ class DeepSeekProvider(LLMProvider):
                 content=content,
                 input_tokens=usage.get("prompt_tokens", 0),
                 output_tokens=usage.get("completion_tokens", 0),
-                model=data.get("model", self.config.model)
+                model=data.get("model", self.config.model),
+                finish_reason=choice.get("finish_reason") or "",
             )
 
         except requests.exceptions.Timeout:

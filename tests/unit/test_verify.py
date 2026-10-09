@@ -140,3 +140,140 @@ class TestVerifyWorkflow:
         g = verify_workflow(sol)
         # A definition alone isn't a demonstration of correctness.
         assert g.reaches_correct_end_state is False
+
+
+class _R:
+    """Minimal stand-in for EvalResult."""
+    def __init__(self, value, ok=True, error="", stdout=""):
+        self.value, self.ok, self.error, self.stdout = value, ok, error, stdout
+
+
+class TestNarrativePreserved:
+    """Prose after a result line is narrative, not part of the result."""
+
+    def test_step_header_after_result_survives_grounding(self):
+        sol = (
+            ";; --- Step 1: sq ---\n"
+            ";; eval: (defn sq [x] (+ x x))\n;; result: ?\n"
+            ";; eval: (sq 5)\n;; result: 10\n"
+            ";; That's wrong: it doubles instead of squaring. Fix:\n"
+            ";; eval: (defn sq [x] (* x x))\n;; result: ?\n"
+            ";; --- Step 2: use ---\n"
+            ";; eval: (sq 5)\n;; result: ?\n"
+            ";; apply:\n"
+        )
+        blocks = extract_eval_blocks(sol)
+        assert [b.form for b in blocks] == [
+            "(defn sq [x] (+ x x))", "(sq 5)", "(defn sq [x] (* x x))", "(sq 5)",
+        ]
+        out = ground_solution(sol, blocks, [_R("#'user/sq"), _R("10"), _R("#'user/sq"), _R("25")])
+        assert ";; That's wrong: it doubles instead of squaring. Fix:" in out
+        assert ";; --- Step 2: use ---" in out
+        assert ";; result: 25" in out
+
+    def test_narrative_after_form_without_result_is_not_part_of_form(self):
+        sol = (
+            ";; eval: (inc 1)\n"
+            ";; Now check the edge case.\n"
+            ";; eval: (inc 2)\n;; result: ?\n"
+        )
+        blocks = extract_eval_blocks(sol)
+        assert [b.form for b in blocks] == ["(inc 1)", "(inc 2)"]
+        out = ground_solution(sol, blocks, [_R("2"), _R("3")])
+        assert out.splitlines() == [
+            ";; eval: (inc 1)", ";; result: 2",
+            ";; Now check the edge case.",
+            ";; eval: (inc 2)", ";; result: 3",
+        ]
+
+    def test_multiline_fabricated_result_is_replaced_whole(self):
+        sol = (
+            ";; eval: (f)\n"
+            ";; result: {:a 1\n"
+            ";;          :b 2}\n"
+            ";; Looks right.\n"
+        )
+        blocks = extract_eval_blocks(sol)
+        out = ground_solution(sol, blocks, [_R("{:a 1, :b 2}")])
+        assert out.splitlines() == [";; eval: (f)", ";; result: {:a 1, :b 2}", ";; Looks right."]
+
+    def test_extra_fabricated_result_lines_are_dropped(self):
+        sol = ";; eval: (/ 1 0)\n;; result: ERROR: invented\n;; result: also invented\n;; next\n"
+        blocks = extract_eval_blocks(sol)
+        out = ground_solution(sol, blocks, [_R("", ok=False, error="Divide by zero")])
+        assert "invented" not in out
+        assert out.splitlines()[-1] == ";; next"
+
+
+class TestRawCodeForms:
+    """Forms written as raw (non-';;') code after the eval marker."""
+
+    def test_raw_multiline_form_is_extracted(self):
+        sol = (
+            ";; eval:\n"
+            "(defn sq [x]\n"
+            "  (* x x))\n"
+            ";; result: ?\n"
+            ";; eval: (sq 3)\n;; result: ?\n"
+        )
+        blocks = extract_eval_blocks(sol)
+        assert [b.form for b in blocks] == ["(defn sq [x]\n  (* x x))", "(sq 3)"]
+        out = ground_solution(sol, blocks, [_R("#'user/sq"), _R("9")])
+        assert out.splitlines() == [
+            ";; eval:", "(defn sq [x]", "  (* x x))", ";; result: #'user/sq",
+            ";; eval: (sq 3)", ";; result: 9",
+        ]
+
+    def test_missing_result_is_inserted_after_whole_form(self):
+        sol = ";; eval: (defn sq [x]\n;;   (* x x))\n;; eval: (sq 2)\n"
+        blocks = extract_eval_blocks(sol)
+        out = ground_solution(sol, blocks, [_R("#'user/sq"), _R("4")])
+        assert out.splitlines() == [
+            ";; eval: (defn sq [x]", ";;   (* x x))", ";; result: #'user/sq",
+            ";; eval: (sq 2)", ";; result: 4",
+        ]
+
+    def test_brackets_in_strings_and_chars_do_not_confuse_balance(self):
+        sol = ';; eval: (str "(" \\) "[")\n;; result: ?\n;; done\n'
+        blocks = extract_eval_blocks(sol)
+        assert blocks[0].form == '(str "(" \\) "[")'
+        assert not blocks[0].malformed
+
+    def test_unbalanced_form_is_flagged(self):
+        sol = ";; eval: (defn broken [x]\n;; result: ?\n;; apply:\n"
+        blocks = extract_eval_blocks(sol)
+        assert blocks[0].malformed
+
+
+@pytest.mark.skipif(not _BB, reason="babashka not installed")
+class TestMalformedTracesRejected:
+    def test_malformed_block_fails_verification(self):
+        sol = (
+            ";; eval: (defn sq [x] (* x x))\n;; result: ?\n"
+            ";; eval: (sq 5\n;; result: ?\n"
+            ";; eval: (sq 5)\n;; result: ?\n"
+        )
+        g = verify_workflow(sol)
+        assert g.malformed == 1
+        assert not g.all_ok
+        assert g.reaches_correct_end_state is False
+
+    def test_results_pair_with_their_own_forms(self):
+        sol = (
+            ";; eval:\n;; result: orphan\n"   # empty form: nothing to run
+            ";; eval: (+ 1 2)\n;; result: ?\n"
+        )
+        g = verify_and_ground(sol)
+        assert ";; result: 3" in g.solution
+        assert g.malformed == 1
+
+
+class TestExtraCloserIsARealReplError:
+    def test_extra_closing_paren_is_runnable_not_malformed(self):
+        # A stray ')' is a reader error the REPL reports — a legitimate
+        # error->fix step, not an unparseable trace.
+        sol = ";; eval: (defn f []\n;;   1))\n;; result: ?\n;; eval: (f)\n"
+        blocks = extract_eval_blocks(sol)
+        assert blocks[0].form == "(defn f []\n  1))"
+        assert not blocks[0].malformed
+        assert blocks[1].form == "(f)"

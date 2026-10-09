@@ -30,6 +30,7 @@ class LLMResponse:
     input_tokens: int = 0
     output_tokens: int = 0
     model: str = ""
+    finish_reason: str = ""   # "stop", "length" (hit max_tokens), ... if the API reports it
 
     @property
     def total_tokens(self) -> int:

@@ -106,7 +106,7 @@ class TestMainIntegration:
                         "diff --git a/src/handler.clj b/src/handler.clj\n"
                         "--- a/src/handler.clj\n"
                         "+++ b/src/handler.clj\n"
-                        "@@ -10,6 +10,8 @@\n"
+                        "@@ -10,4 +10,6 @@\n"
                         " (defn app [request]\n"
                         "-  (-> request wrap-params wrap-json-body))\n"
                         "-\n"

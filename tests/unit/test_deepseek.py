@@ -88,3 +88,52 @@ class TestLogitBiasRetry:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+class TestFinishReason:
+    def _provider(self):
+        from src.llm.deepseek import DeepSeekProvider
+        p = DeepSeekProvider.__new__(DeepSeekProvider)
+        p.config = MagicMock()
+        p.config.model = "deepseek-chat"
+        p.config.timeout = 5
+        p.config.temperature = 0.5
+        p.config.max_tokens = 100
+        p.base_url = "https://api.deepseek.com"
+        p.headers = {}
+        p.retry_config = {"max_retries": 2, "base_delay": 0.0, "max_delay": 0.0}
+        p._total_input_tokens = p._total_output_tokens = p._total_calls = 0
+        return p
+
+    def _reply(self, finish_reason):
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = {
+            "choices": [{"message": {"content": "partial"}, "finish_reason": finish_reason}],
+            "usage": {},
+        }
+        return resp
+
+    def test_finish_reason_is_recorded(self):
+        p = self._provider()
+        with patch("src.llm.deepseek.requests.post", return_value=self._reply("length")):
+            r = p._call_api([])
+        assert r.finish_reason == "length"
+
+    def test_truncated_reply_rejected_when_asked(self):
+        from src.llm.provider import LLMTruncatedError
+        p = self._provider()
+        with patch("src.llm.deepseek.requests.post", return_value=self._reply("length")) as post:
+            with pytest.raises(LLMTruncatedError):
+                p.call("s", "u", reject_truncated=True)
+        assert post.call_count == 1  # truncation is deterministic: no retry
+
+    def test_truncated_reply_returned_by_default(self):
+        p = self._provider()
+        with patch("src.llm.deepseek.requests.post", return_value=self._reply("length")):
+            assert p.call("s", "u") == "partial"
+
+    def test_complete_reply_passes(self):
+        p = self._provider()
+        with patch("src.llm.deepseek.requests.post", return_value=self._reply("stop")):
+            assert p.call("s", "u", reject_truncated=True) == "partial"

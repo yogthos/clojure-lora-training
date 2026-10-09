@@ -92,6 +92,11 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Path for validation report JSON (only if --no-validate not set)",
     )
+    parser.add_argument(
+        "--keep-invalid",
+        action="store_true",
+        help="Report invalid records but keep them in the output (debugging only)",
+    )
 
     return parser.parse_args()
 
@@ -147,10 +152,14 @@ def main() -> int:
     # Step 3: Validate
     if not args.no_validate:
         report_path = Path(args.validation_report or str(output_path).replace(".jsonl", "_validation_report.json"))
-        summary = validate_jsonl_file(output_path, report_path)
+        summary = validate_jsonl_file(
+            output_path, report_path,
+            filtered_path=None if args.keep_invalid else output_path,
+        )
         print(f"  Validation:   {summary['valid']}/{summary['total']} valid (avg score: {summary['avg_score']})")
         if summary["invalid"] > 0:
-            print(f"  WARNING: {summary['invalid']} records below quality threshold — see {report_path}")
+            action = "kept (--keep-invalid)" if args.keep_invalid else "dropped"
+            print(f"  WARNING: {summary['invalid']} invalid records {action} — see {report_path}")
             report_data = json.loads(report_path.read_text())
             for result in report_data.get("results", []):
                 if not result["is_valid"]:

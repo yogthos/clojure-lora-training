@@ -23,7 +23,7 @@ class _FakeLLM:
         self._trace = trace
 
     def call(self, system_prompt, user_prompt, temperature=None,
-             max_tokens=None, require_json=False):
+             max_tokens=None, require_json=False, reject_truncated=False):
         if require_json:
             return json.dumps(self._plan)
         return self._trace
@@ -92,10 +92,20 @@ class TestWorkflowResult:
         assert ";; Goal:" not in ex["instruction"]  # model must produce the plan
 
 
+_DIFF = (
+    "diff --git a/src/x.clj b/src/x.clj\n"
+    "--- a/src/x.clj\n"
+    "+++ b/src/x.clj\n"
+    "@@ -1,2 +1,2 @@\n"
+    " (ns x)\n"
+    "-(defn f [] 1)\n"
+    "+(defn f [] 3)\n"
+)
+
 _TRACE = (
     ";; Goal: validate\n"
     ";; nREPL session:\n;; eval: (+ 1 2)\n;; result: ?\n"
-    ";; apply:\ndiff --git a/x b/x\n"
+    ";; apply:\n" + _DIFF
 )
 
 
@@ -116,6 +126,54 @@ class TestGenerateOne:
     def test_drops_empty_solution(self):
         llm = _FakeLLM(plan={"goal": "g", "steps": [{"name": "s"}]}, trace="   ")
         assert generate_one(_PROMPT, llm, verify=False) is None
+
+
+class TestGenerateOneRejectsBadTraces:
+    _PLAN = {"goal": "g", "steps": [{"name": "s"}]}
+
+    def test_truncated_generation_is_dropped(self):
+        from src.llm.provider import LLMTruncatedError
+
+        class _Truncating(_FakeLLM):
+            def call(self, *a, reject_truncated=False, require_json=False, **k):
+                if require_json:
+                    return json.dumps(self._plan)
+                assert reject_truncated, "workflow call must ask to reject truncation"
+                raise LLMTruncatedError("finish_reason=length")
+
+        assert generate_one(_PROMPT, _Truncating(plan=self._PLAN), verify=False) is None
+
+    def test_trace_without_apply_marker_is_dropped(self):
+        trace = _TRACE.replace(";; apply:\n", "")
+        assert generate_one(_PROMPT, _FakeLLM(plan=self._PLAN, trace=trace)) is None
+
+    def test_trace_without_diff_is_dropped(self):
+        trace = _TRACE.split(";; apply:")[0] + ";; apply:\n"
+        assert generate_one(_PROMPT, _FakeLLM(plan=self._PLAN, trace=trace)) is None
+
+    def test_repetition_loop_is_dropped(self):
+        loop = ";; eval: (require " + "'zip/xml-zip 'zip/seq-zip " * 40 + ")\n"
+        trace = _TRACE.replace(";; apply:", loop + ";; apply:")
+        assert generate_one(_PROMPT, _FakeLLM(plan=self._PLAN, trace=trace)) is None
+
+    def test_repetitive_results_and_padding_are_not_loops(self):
+        row = '{:name "Alice", :total 100} '
+        trace = _TRACE.replace(
+            ";; result: ?",
+            ";; result: (" + row * 12 + ")\n;; eval: (apply str (repeat 50 \\x))\n"
+            ";; result: \"" + "x" * 50 + "\"\n;;" + " " * 120 + "aligned",
+        )
+        assert generate_one(_PROMPT, _FakeLLM(plan=self._PLAN, trace=trace)) is not None
+
+    def test_wrong_hunk_counts_are_repaired(self):
+        trace = _TRACE.replace("@@ -1,2 +1,2 @@", "@@ -1,7 +1,30 @@")
+        r = generate_one(_PROMPT, _FakeLLM(plan=self._PLAN, trace=trace))
+        assert r is not None
+        assert "@@ -1,2 +1,2 @@" in r.solution
+
+    def test_unrepairable_diff_is_dropped(self):
+        trace = _TRACE + "@@ -1,0 +"
+        assert generate_one(_PROMPT, _FakeLLM(plan=self._PLAN, trace=trace)) is None
 
 
 class TestConcurrentGeneration:

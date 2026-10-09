@@ -407,3 +407,46 @@ class TestFormatting:
         )
         # Output is exactly the unified diff — nothing fabricated around it.
         assert ex.to_dict()["output"] == ex.diff
+
+
+class TestDiffsApply:
+    """Mined diffs must be valid patches against the before-state."""
+
+    def _repo_with_trailing_blank_context(self, root: Path) -> None:
+        def git(*args):
+            subprocess.run(["git", "-C", str(root), *args], check=True,
+                           capture_output=True)
+
+        git("init")
+        git("config", "user.email", "t@t")
+        git("config", "user.name", "t")
+        # Blank lines at the end of the file become trailing ' ' context lines
+        # in the last hunk — exactly what .strip() used to eat.
+        (root / "core.clj").write_text("(ns app)\n\n(defn a [] 1)\n\n\n\n")
+        git("add", "-A")
+        git("commit", "-m", "initial namespace with a function")
+        (root / "core.clj").write_text("(ns app)\n\n(defn a [] 2)\n\n\n\n")
+        git("add", "-A")
+        git("commit", "-m", "change the return value of a")
+        return git
+
+    def _applies(self, root: Path, base: str, diff: str) -> bool:
+        subprocess.run(["git", "-C", str(root), "checkout", "-q", base], check=True)
+        r = subprocess.run(["git", "-C", str(root), "apply", "--check", "-"],
+                           input=diff, text=True, capture_output=True)
+        return r.returncode == 0
+
+    def test_range_diff_keeps_trailing_context(self):
+        from src.codeflow.git_mining.miner import get_range_diff
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            self._repo_with_trailing_blank_context(root)
+            diff = get_range_diff(str(root), "HEAD~1", "HEAD")
+            assert self._applies(root, "HEAD~1", diff)
+
+    def test_commit_diff_keeps_trailing_context(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            self._repo_with_trailing_blank_context(root)
+            diff = get_commit_diff(str(root), "HEAD")
+            assert self._applies(root, "HEAD~1", diff)

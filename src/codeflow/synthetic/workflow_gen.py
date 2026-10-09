@@ -8,10 +8,12 @@ dominates success).
 """
 
 import json
+import re
 from dataclasses import dataclass
 from typing import Callable, List, Optional
 
 from ...llm.provider import LLMProvider
+from ..diffs import apply_section_errors, check_patch, extract_diff, fix_hunk_headers
 from ...shared import _WORKFLOW_SYSTEM_PROMPT
 from .prompt_mining import MinedPrompt
 from .prompts import PLAN_SYSTEM as _PLAN_SYSTEM, WORKFLOW_SYSTEM as _WORKFLOW_SYSTEM
@@ -101,12 +103,44 @@ def generate_workflow(
             temperature=0.5,
             max_tokens=8192,
             require_json=False,
+            reject_truncated=True,  # a cut-off trace has no (or half a) diff
         )
         if isinstance(result, dict):
             return result.get("text", result.get("content", str(result)))
         return str(result)
     except Exception:
         return ""
+
+
+# A short unit (8-200 chars) repeated back-to-back 10+ times: a degenerate
+# sampling loop, e.g. "'zip/xml-zip 'zip/seq-zip 'zip/xml-zip ...".
+_REPETITION_RE = re.compile(r"(.{8,200}?)\1{9,}", re.DOTALL)
+
+
+def _has_repetition_loop(text: str) -> bool:
+    """True if the model's own text degenerates into a repeating loop.
+
+    ``;; result:`` lines are skipped (they're replaced by, or are, real REPL
+    output, which can legitimately repeat), as are units with under 4 distinct
+    characters (whitespace padding, ``"xxxx"`` test strings).
+    """
+    own = "\n".join(l for l in text.splitlines() if not l.lstrip().startswith(";; result:"))
+    return any(len(set(m.group(1))) >= 4 for m in _REPETITION_RE.finditer(own))
+
+
+def _repair_diff(solution: str) -> Optional[str]:
+    """Recompute the trailing diff's hunk counts; None if it's still not a patch.
+
+    LLMs get @@ counts wrong far more often than the hunk bodies, so the counts
+    are rebuilt from the bodies before the patch is checked.
+    """
+    diff = extract_diff(solution)
+    if not diff:
+        return None
+    fixed = fix_hunk_headers(diff)
+    if check_patch(fixed) is not None:
+        return None
+    return solution[: len(solution) - len(diff)] + fixed
 
 
 def generate_one(
@@ -125,7 +159,7 @@ def generate_one(
     """
     plan = generate_plan(prompt, llm)
     solution = generate_workflow(prompt, plan, llm)
-    if not solution.strip():
+    if not solution.strip() or apply_section_errors(solution) or _has_repetition_loop(solution):
         return None
 
     verified = False
@@ -139,6 +173,10 @@ def generate_one(
         solution = graded.solution
         verified = True
         pass_rate = graded.pass_rate
+
+    solution = _repair_diff(solution)
+    if solution is None:
+        return None
 
     return WorkflowResult(
         user_prompt=prompt.user_prompt,

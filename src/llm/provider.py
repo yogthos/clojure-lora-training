@@ -32,6 +32,11 @@ class LLMResponseError(LLMError):
     pass
 
 
+class LLMTruncatedError(LLMResponseError):
+    """Raised when a response was cut off at max_tokens and the caller can't use it."""
+    pass
+
+
 class LLMProvider(ABC):
     """Abstract base class for LLM providers.
 
@@ -109,7 +114,8 @@ class LLMProvider(ABC):
         user_prompt: str,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
-        require_json: bool = False
+        require_json: bool = False,
+        reject_truncated: bool = False,
     ) -> str:
         """Make a single LLM call with system and user prompts.
 
@@ -119,6 +125,9 @@ class LLMProvider(ABC):
             temperature: Sampling temperature.
             max_tokens: Maximum tokens in response.
             require_json: If True, request JSON response format.
+            reject_truncated: If True, raise LLMTruncatedError when the provider
+                reports the reply was cut off at max_tokens. Not retried — the
+                same request would truncate again.
 
         Returns:
             Generated text content.
@@ -128,6 +137,10 @@ class LLMProvider(ABC):
             Message(role=MessageRole.USER, content=user_prompt)
         ]
         response = self._call_with_retry(messages, temperature, max_tokens, require_json)
+        if reject_truncated and response.finish_reason == "length":
+            raise LLMTruncatedError(
+                f"{self.provider_name} reply truncated at max_tokens={max_tokens}"
+            )
         return response.content
 
     def call_json(

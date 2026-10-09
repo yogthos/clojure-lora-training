@@ -6,8 +6,10 @@ Validates Code Flow training examples and produces validation reports.
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
+from ..diffs import apply_section_errors, check_patch, extract_diff
+from ...shared import write_jsonl
 from .assembler import load_jsonl
 
 # ── Clojure-specific terms for relevance scoring ────────────────────────
@@ -118,45 +120,26 @@ def check_clojure_syntax(code: str) -> List[str]:
 # ── Diff structure check ─────────────────────────────────────────────────
 
 def check_diff_structure(diff: str) -> List[str]:
-    """Validate unified diff structure.
+    """Validate that the output's diff is a patch ``git apply`` accepts.
 
-    Checks for:
-    - At least one diff --git header
-    - Corresponding @@ hunk headers
-    - Lines with +/- prefixes indicating actual changes
-    - Basic file path format
+    ``diff`` may be a whole output (REPL trace + ``;; apply:`` + diff); only the
+    part from the first ``diff --git`` header is checked. Hunk counts must match
+    their bodies and at least one line must actually change.
     """
-    errors = []
-
     if not diff.strip():
-        errors.append("Empty diff")
-        return errors
+        return ["Empty diff"]
 
-    has_header = "diff --git" in diff
-    has_hunk = "@@" in diff
-    has_old = "-" in diff
-    has_new = "+" in diff
+    patch = extract_diff(diff)
+    if not patch:
+        return ["Missing diff --git header"]
 
-    if not has_header:
-        errors.append("Missing diff --git header")
+    errors = []
+    problem = check_patch(patch)
+    if problem:
+        errors.append(f"Corrupt patch: {problem}")
 
-    if not has_hunk:
-        errors.append("Missing hunk header (@@ -line,count +line,count @@)")
-
-    if not (has_old or has_new):
-        errors.append("No changed lines found (+/- lines)")
-
-    # Check hunk header format for each hunk
-    for i, line in enumerate(diff.splitlines()):
-        if line.startswith("@@"):
-            # Validate: @@ -digits[,digits] +digits[,digits] @@
-            import re
-            if not re.match(r'^@@\s+-\d+(?:,\d+)?\s+\+\d+(?:,\d+)?\s+@@', line):
-                errors.append(f"Malformed hunk header at line {i + 1}: {line[:60]}")
-
-    # Verify there's at least one meaningful change (not just context)
     changed_lines = [
-        l for l in diff.splitlines()
+        l for l in patch.splitlines()
         if (l.startswith("+") and not l.startswith("+++"))
         or (l.startswith("-") and not l.startswith("---"))
     ]
@@ -264,7 +247,7 @@ def validate_example(example: dict, min_score: float = 0.4) -> ValidationResult:
         result.syntax_score = 0.5  # No code blocks to check, not a failure
 
     # Diff structure check
-    diff_errors = check_diff_structure(output)
+    diff_errors = check_diff_structure(output) + apply_section_errors(output)
     if diff_errors:
         result.diff_errors.extend(diff_errors)
         result.diff_score = 0.0
@@ -279,7 +262,8 @@ def validate_example(example: dict, min_score: float = 0.4) -> ValidationResult:
     )
     result.total_score = round(result.total_score, 2)
 
-    result.is_valid = result.total_score >= min_score
+    # A corrupt patch is unusable training data whatever else scores well.
+    result.is_valid = result.total_score >= min_score and not result.diff_errors
     return result
 
 
@@ -323,13 +307,16 @@ def _extract_code_blocks(text: str) -> List[str]:
 # ── Batch validation ─────────────────────────────────────────────────────
 
 def validate_jsonl_file(input_path: Path, output_path: Path,
-                        min_score: float = 0.4) -> dict:
+                        min_score: float = 0.4,
+                        filtered_path: Optional[Path] = None) -> dict:
     """Validate all examples in a JSONL file and write a report.
 
     Args:
         input_path: Path to JSONL file to validate.
         output_path: Path to write JSON validation report.
         min_score: Minimum score to consider valid.
+        filtered_path: If given, write only the valid records here (may be
+            input_path itself, to drop invalid records in place).
 
     Returns:
         Summary dict with total, valid, invalid counts and scores.
@@ -337,7 +324,7 @@ def validate_jsonl_file(input_path: Path, output_path: Path,
     records = load_jsonl(input_path)
 
     results = []
-    valid_count = 0
+    kept = []
     scores = []
 
     for i, rec in enumerate(records):
@@ -346,7 +333,10 @@ def validate_jsonl_file(input_path: Path, output_path: Path,
         results.append(entry)
         scores.append(vr.total_score)
         if vr.is_valid:
-            valid_count += 1
+            kept.append(rec)
+    valid_count = len(kept)
+    if filtered_path is not None:
+        write_jsonl(kept, filtered_path)
 
     summary = {
         "total": len(records),

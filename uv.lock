@@ -221,6 +221,12 @@ test = [
     { name = "pytest-cov" },
 ]
 
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-cov" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "clojure-lora-trainer", extras = ["test", "api", "mlx", "json-repair"], marker = "extra == 'dev'" },
@@ -238,6 +244,12 @@ requires-dist = [
     { name = "transformers", specifier = ">=4.36.0" },
 ]
 provides-extras = ["api", "mlx", "json-repair", "test", "dev"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=7.0.0" },
+    { name = "pytest-cov", specifier = ">=4.0.0" },
+]
 
 [[package]]
 name = "colorama"

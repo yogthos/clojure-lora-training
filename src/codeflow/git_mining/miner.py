@@ -248,7 +248,8 @@ def get_commit_diff(repo_path: str, commit_hash: str) -> str:
     result = subprocess.run(cmd, capture_output=True, text=True, errors="replace")
     if result.returncode != 0:
         return ""
-    return result.stdout.strip()
+    # Don't strip: trailing ' ' lines are blank context the hunk counts include.
+    return result.stdout
 
 
 def get_file_content(repo_path: str, commit_hash: str, filepath: str) -> str:
@@ -279,7 +280,8 @@ def get_range_diff(
     result = subprocess.run(cmd, capture_output=True, text=True, errors="replace")
     if result.returncode != 0:
         return ""
-    return result.stdout.strip()
+    # Don't strip: trailing ' ' lines are blank context the hunk counts include.
+    return result.stdout
 
 
 def _base_ref(repo_path: str, commit_hash: str) -> str:
