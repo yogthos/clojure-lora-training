@@ -64,12 +64,7 @@ from src.codeflow.synthetic.gen_code import (
     CodeGenResult,
     validate_solution,
 )
-from src.codeflow.synthetic.cluster import (
-    select_coreset,
-    select_by_feature_diversity,
-    kcenter_greedy,
-    embed_examples,
-)
+from src.codeflow.synthetic.cluster import select_by_feature_diversity
 from src.codeflow.synthetic.file_utils import (
     merge_jsonl,
     deduplicate_jsonl,

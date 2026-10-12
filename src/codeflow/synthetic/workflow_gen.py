@@ -45,19 +45,12 @@ class WorkflowResult:
         return json.dumps(self.to_training_example(), ensure_ascii=False)
 
 
-def _fallback_plan(prompt: MinedPrompt) -> dict:
-    """A minimal plan when the planning call fails to parse."""
-    return {
-        "goal": prompt.user_prompt,
-        "files": [{"path": "src/core.clj", "purpose": "implementation"}],
-        "steps": [
-            {"name": "solve", "purpose": prompt.user_prompt, "depends_on": []},
-        ],
-    }
+def generate_plan(prompt: MinedPrompt, llm: LLMProvider) -> Optional[dict]:
+    """Plan pass: produce {goal, files, steps} from the user request.
 
-
-def generate_plan(prompt: MinedPrompt, llm: LLMProvider) -> dict:
-    """Plan pass: produce {goal, files, steps} from the user request."""
+    None if the call fails or returns no steps: the task is dropped rather
+    than traced against a canned plan that isn't about it.
+    """
     user = (
         f"User request: {prompt.user_prompt}\n"
         f"Project context: {prompt.project_context}\n\n"
@@ -77,12 +70,12 @@ def generate_plan(prompt: MinedPrompt, llm: LLMProvider) -> dict:
     except (ValueError, TypeError, IndexError, LLMError) as e:
         if isinstance(e, LLMAuthError):
             raise
-        return _fallback_plan(prompt)
+        return None
 
     if not isinstance(plan, dict) or not plan.get("steps"):
-        return _fallback_plan(prompt)
+        return None
     plan.setdefault("goal", prompt.user_prompt)
-    plan.setdefault("files", [{"path": "src/core.clj", "purpose": "implementation"}])
+    plan.setdefault("files", [])
     return plan
 
 
@@ -149,6 +142,8 @@ def generate_one(
     work; it is self-contained so it can run concurrently across prompts.
     """
     plan = generate_plan(prompt, llm)
+    if plan is None:
+        return None
     solution = generate_workflow(prompt, plan, llm)
     if not solution.strip() or apply_section_errors(solution) or _has_repetition_loop(solution):
         return None

@@ -11,7 +11,6 @@ from src.codeflow.synthetic.workflow_gen import (
     generate_one,
     generate_workflows,
     generate_workflows_concurrent,
-    _fallback_plan,
 )
 
 
@@ -51,12 +50,20 @@ class TestGeneratePlan:
         assert result["files"][0]["path"] == "src/csv.clj"
         assert [s["name"] for s in result["steps"]] == ["parse-line", "valid-row?"]
 
-    def test_falls_back_on_bad_json(self):
+    def test_bad_json_drops_the_task(self):
+        # A canned plan isn't about this request; nothing is substituted.
         class Bad:
             def call(self, *a, **k):
                 return "not json"
-        result = generate_plan(_PROMPT, Bad())
-        assert "goal" in result and "steps" in result  # fallback shape
+        assert generate_plan(_PROMPT, Bad()) is None
+
+    def test_planless_task_is_not_generated(self):
+        llm = _FakeLLM(plan={"goal": "g", "steps": []}, trace=_TRACE)
+        assert generate_one(_PROMPT, llm, verify=False) is None
+
+    def test_missing_files_are_not_invented(self):
+        result = generate_plan(_PROMPT, _FakeLLM(plan={"goal": "g", "steps": [{"name": "s"}]}))
+        assert result["files"] == []
 
 
 class TestGenerateWorkflow:
@@ -68,7 +75,8 @@ class TestGenerateWorkflow:
             ";; eval: (defn valid-row? [r] (= 3 (count r)))\n;; result: ?\n"
             ";; apply:\ndiff --git a/src/csv.clj b/src/csv.clj\n"
         )
-        out = generate_workflow(_PROMPT, _fallback_plan(_PROMPT), _FakeLLM(trace=trace))
+        plan = {"goal": "validate rows", "files": [], "steps": [{"name": "valid-row?"}]}
+        out = generate_workflow(_PROMPT, plan, _FakeLLM(trace=trace))
         assert ";; Goal:" in out
         assert ";; Plan" in out
         assert "diff --git" in out
