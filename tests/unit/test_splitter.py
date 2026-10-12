@@ -29,10 +29,10 @@ class TestStratifiedSplit:
         recs = []
         for i in range(80):
             recs.append({"system": TRANSITION_SYSTEM_PROMPTS[0],
-                         "instruction": f"fix bug {i}", "output": "diff", "source": "git"})
+                         "instruction": f"fix bug {i}", "output": f"diff {i}", "source": "git"})
         for i in range(20):
             recs.append({"system": WORKFLOW_SYSTEM_PROMPTS[0],
-                         "instruction": f"build feature {i}", "output": ";; Goal: x",
+                         "instruction": f"build feature {i}", "output": f";; Goal: x{i}",
                          "source": "synthetic"})
         return recs
 

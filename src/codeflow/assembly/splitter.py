@@ -2,7 +2,8 @@
 
 Records are split in groups so related examples never straddle the split: all
 records from one repository, records with the same input (the same before-state
-files), and records whose instructions match after normalization. A record-level
+files), records whose instructions match after normalization, and records whose
+code is similar (MinHash Jaccard >= 0.5, e.g. a change carried into a fork). A record-level
 split let near-identical examples sit on both sides and made eval loss look
 better than generalization is.
 
@@ -20,6 +21,11 @@ from typing import Dict, List, Tuple
 
 from ...shared import compute_dedup_key, WORKFLOW_SYSTEM_PROMPTS
 from .assembler import classify_example
+from .near_dup import near_duplicate_clusters, record_text
+
+# Lower than assembly's drop threshold: records this similar aren't
+# duplicates, but one on each side would still flatter the eval loss.
+SPLIT_SIMILARITY = 0.5
 
 _WORKFLOW_PROMPTS = set(WORKFLOW_SYSTEM_PROMPTS)
 
@@ -49,7 +55,7 @@ def _group_keys(record: dict) -> List[str]:
 
 def record_groups(records: List[dict]) -> List[int]:
     """Group id per record: connected components over shared repo, identical
-    input, or normalized instruction."""
+    input, normalized instruction, or similar code."""
     parent = list(range(len(records)))
 
     def find(i):
@@ -58,9 +64,10 @@ def record_groups(records: List[dict]) -> List[int]:
             i = parent[i]
         return i
 
+    similar = near_duplicate_clusters([record_text(r) for r in records], SPLIT_SIMILARITY)
     first: Dict[str, int] = {}
     for i, r in enumerate(records):
-        for key in _group_keys(r):
+        for key in _group_keys(r) + [f"similar:{similar[i]}"]:
             if key in first:
                 parent[find(i)] = find(first[key])
             else:
@@ -78,7 +85,7 @@ def assert_no_leakage(train: List[dict], val: List[dict]) -> None:
     shared = set(groups[:len(train)]) & set(groups[len(train):])
     if shared:
         raise ValueError(f"train/val leakage: {len(shared)} group(s) of related records "
-                         "(same repo, input or instruction) on both sides")
+                         "(same repo, input, instruction or similar code) on both sides")
 
 
 def stratified_split(

@@ -6,9 +6,10 @@ Produces a merged JSONL dataset ready for LLaMA-Factory training.
 import json
 import random
 import re
+import sys
 from collections import Counter
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from ...shared import (
     compute_dedup_key,
@@ -120,6 +121,24 @@ def deduplicate(records: List[dict]) -> List[dict]:
             seen.add(key)
             result.append(rec)
     return result
+
+
+NEAR_DUP_THRESHOLD = 0.8
+
+
+def drop_near_duplicates(records: List[dict],
+                         threshold: float = NEAR_DUP_THRESHOLD) -> Tuple[List[dict], int]:
+    """Keep the first record of each near-duplicate cluster (see near_dup.py);
+    returns (kept, number dropped)."""
+    from .near_dup import near_duplicate_clusters, record_text
+
+    ids = near_duplicate_clusters([record_text(r) for r in records], threshold)
+    seen, kept = set(), []
+    for r, c in zip(records, ids):
+        if c not in seen:
+            seen.add(c)
+            kept.append(r)
+    return kept, len(records) - len(kept)
 
 
 def _example_chars(record: dict) -> int:
@@ -266,7 +285,8 @@ def assemble_dataset(
     2. Load all synthetic records
     3. Merge into one list
     4. Deduplicate (keep first occurrence — typically git-mined wins)
-    5. Drop records too large for the training context window
+    5. Drop records too large for the training context window, then near-
+       duplicates (MinHash; the same change in a fork or imported history)
     6. Balance by change type
     7. Write to output_path as JSONL
     8. Return the assembled records
@@ -313,6 +333,9 @@ def assemble_dataset(
 
     records = deduplicate(records)
     records = filter_by_length(records, max_chars=max_chars)
+    records, near = drop_near_duplicates(records)
+    if near:
+        print(f"Dropped {near} near-duplicate records", file=sys.stderr)
     records = filter_trivial_diffs(records, min_changed_lines=min_changed_lines)
 
     # Balance only the abundant git-mined pool by change type. The synthetic

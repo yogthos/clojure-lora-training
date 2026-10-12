@@ -381,12 +381,12 @@ class TestAssembleDataset:
 
             # 100 git bug-fix records (one dominant change type).
             _write_jsonl(git_dir / "g.jsonl", [
-                {"instruction": f"fix bug {i}", "output": "diff"}
+                {"instruction": f"fix bug {i}", "output": f"diff {i}"}
                 for i in range(100)
             ])
             # 30 synthetic records that also classify as bug-fix.
             _write_jsonl(synth_dir / "s.jsonl", [
-                _live(f"resolve crash {i}", "diff")
+                _live(f"resolve crash {i}", f"patch {i}")
                 for i in range(30)
             ])
 
@@ -409,11 +409,11 @@ class TestAssembleDataset:
             git_dir.mkdir()
             synth_dir.mkdir()
             _write_jsonl(git_dir / "g.jsonl", [
-                {"instruction": f"add feature {i}", "output": "diff"}
+                {"instruction": f"add feature {i}", "output": f"diff {i}"}
                 for i in range(60)
             ])
             _write_jsonl(synth_dir / "s.jsonl", [
-                _live(f"build thing {i}", ";; Goal: x")
+                _live(f"build thing {i}", f";; Goal: x{i}")
                 for i in range(60)
             ])
             result = assemble_dataset(
