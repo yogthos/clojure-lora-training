@@ -130,7 +130,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--no-verify-execution", action="store_true",
-        help="Skip running generated REPL forms through babashka (by default "
+        help="Skip running generated REPL forms through jolt (by default "
              "forms are executed, results grounded, and failing solutions dropped)",
     )
     parser.add_argument(
@@ -282,12 +282,14 @@ def step_generate_tasks(args, tree: FeatureTree, llm) -> List[GeneratedTask]:
 
 def step_generate_code(args, tasks: List[GeneratedTask], llm) -> List[CodeGenResult]:
     """Step 5: Generate REPL-driven code solutions."""
-    from src.codeflow.synthetic.bb_eval import bb_available
+    from src.codeflow.synthetic.jolt_eval import jolt_available
 
-    verify = not args.no_verify_execution and bb_available()
-    if not args.no_verify_execution and not verify:
-        print("  WARNING: babashka (bb) not found — skipping execution "
-              "verification (results stay LLM-fabricated)", file=sys.stderr)
+    verify = not args.no_verify_execution
+    if verify and not jolt_available():
+        # Without execution every ';; result:' stays LLM-fabricated: refuse
+        # rather than silently producing ungrounded data.
+        raise SystemExit("ERROR: jolt not found on PATH. Install it, or pass "
+                         "--no-verify-execution to keep fabricated results.")
 
     task_dicts = [t.to_dict() for t in tasks]
     results = generate_training_examples(

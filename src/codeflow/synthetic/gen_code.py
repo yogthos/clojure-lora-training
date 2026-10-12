@@ -35,7 +35,7 @@ class CodeGenResult:
     analysis: dict
     solution: str  # Complete REPL + diff output
     repo_name: str = ""
-    verified: bool = False    # solution's forms were executed in babashka
+    verified: bool = False    # solution's forms were executed in a Jolt nREPL session
     pass_rate: float = 1.0    # fraction of forms that executed cleanly
 
     def to_training_example(self) -> dict:
@@ -219,13 +219,13 @@ def generate_training_examples(
     llm: LLMProvider,
     max_examples: int = 50,
     verify: bool = False,
-    bb_path: str = "bb",
+    jolt_path: str = "jolt",
     min_pass_rate: float = 1.0,
 ) -> List[CodeGenResult]:
     """Generate complete training examples from a list of tasks.
 
     Each task goes through: analysis → code generation. When ``verify`` is set,
-    the generated REPL forms are executed in babashka, their ``;; result:``
+    the generated REPL forms are executed in a Jolt nREPL session, their ``;; result:``
     lines are rewritten with the real output, and solutions whose forms execute
     cleanly below ``min_pass_rate`` (or have no runnable forms) are dropped.
 
@@ -234,7 +234,7 @@ def generate_training_examples(
         llm: LLM provider.
         max_examples: Maximum number of examples to generate.
         verify: Execute and ground each solution's forms before keeping it.
-        bb_path: babashka binary to use for verification.
+        jolt_path: jolt binary to use for verification.
         min_pass_rate: Minimum fraction of forms that must run cleanly to keep
             a verified solution.
 
@@ -259,7 +259,7 @@ def generate_training_examples(
         if verify:
             from .verify import verify_and_ground
 
-            grounded = verify_and_ground(solution, bb_path=bb_path)
+            grounded = verify_and_ground(solution, jolt_path=jolt_path)
             # Drop solutions with no runnable forms or too many failures.
             if grounded.total == 0 or grounded.pass_rate < min_pass_rate:
                 continue

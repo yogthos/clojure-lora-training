@@ -147,7 +147,7 @@ def generate_one(
     prompt: MinedPrompt,
     llm: LLMProvider,
     verify: bool = False,
-    bb_path: str = "bb",
+    jolt_path: str = "jolt",
     min_pass_rate: float = 0.6,
 ) -> Optional[WorkflowResult]:
     """Produce one workflow trace for a prompt, or None if it is dropped.
@@ -167,7 +167,7 @@ def generate_one(
     if verify:
         from .verify import verify_workflow
 
-        graded = verify_workflow(solution, bb_path=bb_path)
+        graded = verify_workflow(solution, jolt_path=jolt_path)
         if not graded.reaches_correct_end_state or graded.pass_rate < min_pass_rate:
             return None
         solution = graded.solution
@@ -193,13 +193,13 @@ def generate_workflows(
     llm: LLMProvider,
     max_examples: int = 50,
     verify: bool = False,
-    bb_path: str = "bb",
+    jolt_path: str = "jolt",
     min_pass_rate: float = 0.6,
 ) -> List[WorkflowResult]:
     """Generate workflow traces for a list of mined prompts (serially)."""
     results: List[WorkflowResult] = []
     for prompt in prompts[:max_examples]:
-        r = generate_one(prompt, llm, verify, bb_path, min_pass_rate)
+        r = generate_one(prompt, llm, verify, jolt_path, min_pass_rate)
         if r is not None:
             results.append(r)
     return results
@@ -210,14 +210,14 @@ def generate_workflows_concurrent(
     llm: LLMProvider,
     max_workers: int = 8,
     verify: bool = False,
-    bb_path: str = "bb",
+    jolt_path: str = "jolt",
     min_pass_rate: float = 0.6,
     on_result: Optional[Callable[[WorkflowResult], None]] = None,
     on_progress: Optional[Callable[[int, int, int], None]] = None,
 ) -> List[WorkflowResult]:
     """Generate workflow traces concurrently across prompts.
 
-    The work is I/O-bound (LLM API calls plus babashka subprocesses), so a
+    The work is I/O-bound (LLM API calls plus jolt subprocesses), so a
     thread pool gives real speedup. ``on_result`` is invoked from the calling
     thread for each kept trace as it completes — use it to stream results to
     disk incrementally. ``on_progress(done, total, kept)`` fires once per
@@ -230,7 +230,7 @@ def generate_workflows_concurrent(
     total = len(prompts)
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         futures = [
-            pool.submit(generate_one, p, llm, verify, bb_path, min_pass_rate)
+            pool.submit(generate_one, p, llm, verify, jolt_path, min_pass_rate)
             for p in prompts
         ]
         for done, fut in enumerate(as_completed(futures), 1):

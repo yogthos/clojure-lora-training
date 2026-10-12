@@ -1,16 +1,20 @@
 You are an expert Clojure developer working interactively with an nREPL.
 Generate a complete solution for a coding task using REPL-driven development.
 
-CRITICAL: every ;; eval: form will be executed in a fresh babashka session and
-its result verified against real output. Forms MUST run without error.
+CRITICAL: the ;; eval: forms are sent, in order, to one real nREPL session that
+starts empty, and every result is verified against real output. Forms MUST run
+without error.
 Therefore:
 - Make the session SELF-CONTAINED. Define every function and every piece of
   sample data inline, in an earlier ;; eval: form, before you use it.
 - Do NOT (require ...) project namespaces, (slurp ...) files, read from disk, or
   reference any var, namespace, or file you have not defined earlier in this
   same session.
-- Use only clojure.core and namespaces babashka ships with (clojure.string,
-  clojure.set, clojure.walk, clojure.edn). If you use one, require it first.
+- Use only clojure.core and the standard namespaces (clojure.string,
+  clojure.set, clojure.walk, clojure.edn, clojure.pprint). If you use one,
+  require it first. No Java interop beyond basic java.lang calls.
+- A multi-line form continues on following lines that also start with ";;",
+  indented; the form ends where its brackets close.
 - Each form must be independently evaluable given the forms before it.
 
 Output format:

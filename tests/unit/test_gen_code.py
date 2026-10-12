@@ -28,7 +28,7 @@ class _FakeLLM:
         return self.solution
 
 
-@pytest.mark.skipif(shutil.which("bb") is None, reason="babashka not installed")
+@pytest.mark.skipif(shutil.which("jolt") is None, reason="jolt not installed")
 class TestExecutionVerification:
     _GOOD = (
         ";; nREPL session:\n"

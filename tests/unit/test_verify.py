@@ -1,4 +1,4 @@
-"""Tests for grounding synthetic solutions in real babashka execution."""
+"""Tests for grounding synthetic solutions in real Jolt nREPL execution."""
 
 import shutil
 import pytest
@@ -11,7 +11,7 @@ from src.codeflow.synthetic.verify import (
     _is_definition,
 )
 
-_BB = shutil.which("bb") is not None
+_JOLT = shutil.which("jolt") is not None
 
 
 class TestExtractEvalBlocks:
@@ -63,7 +63,7 @@ class TestGroundSolution:
         assert "diff --git a/x b/x" in grounded
 
 
-@pytest.mark.skipif(not _BB, reason="babashka not installed")
+@pytest.mark.skipif(not _JOLT, reason="jolt not installed")
 class TestVerifyAndGround:
     def test_self_contained_session_grounds_to_real_values(self):
         sol = (
@@ -109,7 +109,7 @@ class TestIsDefinition:
         assert not _is_definition("(map inc [1 2 3])")
 
 
-@pytest.mark.skipif(not _BB, reason="babashka not installed")
+@pytest.mark.skipif(not _JOLT, reason="jolt not installed")
 class TestVerifyWorkflow:
     def test_intermediate_failure_then_recovery_is_kept(self):
         # First version of sq is wrong (adds), gets run, then fixed and re-run.
@@ -245,7 +245,7 @@ class TestRawCodeForms:
         assert blocks[0].malformed
 
 
-@pytest.mark.skipif(not _BB, reason="babashka not installed")
+@pytest.mark.skipif(not _JOLT, reason="jolt not installed")
 class TestMalformedTracesRejected:
     def test_malformed_block_fails_verification(self):
         sol = (

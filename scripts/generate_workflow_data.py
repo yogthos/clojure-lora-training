@@ -5,7 +5,7 @@ Pipeline:
   1. Load mined git records (commit-message intentions)
   2. Backtranslate substantive messages into vague user-style prompts
   3. For each prompt: plan (goal/files/steps) -> workflow (iterative REPL build
-     with real failure/recovery) -> execute & ground in babashka
+     with real failure/recovery) -> execute & ground in a Jolt nREPL session
   4. Keep traces that reach a correct end state; write LLaMA-Factory JSONL
 
 Usage:
@@ -23,7 +23,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.shared import load_jsonl
-from src.codeflow.synthetic.bb_eval import bb_available
+from src.codeflow.synthetic.jolt_eval import jolt_available
 from src.codeflow.synthetic.prompt_mining import mine_prompts
 from src.codeflow.synthetic.workflow_gen import generate_workflows_concurrent
 
@@ -42,10 +42,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--min-pass-rate", type=float, default=0.6,
                    help="Min fraction of a trace's forms that must run cleanly to keep it")
     p.add_argument("--no-verify-execution", action="store_true",
-                   help="Skip babashka execution/grounding (results stay LLM-fabricated)")
+                   help="Skip jolt execution/grounding (results stay LLM-fabricated)")
     p.add_argument("--workers", type=int, default=8,
                    help="Concurrent worker threads (the work is I/O-bound on the "
-                        "LLM API and babashka). Default 8.")
+                        "LLM API and jolt). Default 8.")
     p.add_argument("--seed", type=int, default=42, help="Shuffle seed for source records")
     return p.parse_args()
 
@@ -76,10 +76,13 @@ def main() -> int:
     args = parse_args()
     llm = setup_llm()
 
-    verify = not args.no_verify_execution and bb_available()
-    if not args.no_verify_execution and not verify:
-        print("  WARNING: babashka (bb) not found — skipping execution verification",
-              file=sys.stderr)
+    verify = not args.no_verify_execution
+    if verify and not jolt_available():
+        # Without execution every ';; result:' stays LLM-fabricated: refuse
+        # rather than silently producing ungrounded data.
+        print("ERROR: jolt not found on PATH. Install it, or pass "
+              "--no-verify-execution to keep fabricated results.", file=sys.stderr)
+        return 1
 
     records = []
     for path in args.git_data:

@@ -30,12 +30,16 @@ diff --git a/path b/path
 +added
 
 CRITICAL rules:
-1. SELF-CONTAINED + EXECUTABLE. Every ;; eval: form is run in a fresh babashka
-   session and its result is verified. Define every function and every piece of
-   sample data inline, in an earlier form, before using it. Do NOT (require ...)
-   project namespaces, (slurp ...) files, hit a database/network, or reference
-   any undefined var. Use only clojure.core and babashka built-ins
-   (clojure.string, clojure.set, clojure.walk, clojure.edn) — require them first.
+1. SELF-CONTAINED + EXECUTABLE. The ;; eval: forms are sent, in order, to one
+   real nREPL session that starts empty, and every result is verified. Define
+   every function and every piece of sample data inline, in an earlier form,
+   before using it. Do NOT (require ...) project namespaces, (slurp ...) files,
+   hit a database/network, or reference any undefined var. Use only
+   clojure.core and the standard namespaces (clojure.string, clojure.set,
+   clojure.walk, clojure.edn, clojure.pprint) — require them first. No Java
+   interop beyond basic java.lang calls.
+   A multi-line form continues on following lines that also start with ";;",
+   indented; the form ends where its brackets close.
 2. SHOW FAILURE AND RECOVERY. For at least one step, write a first version that
    is wrong or throws, run it, see the problem in the result, then fix it and
    re-run until correct. This error -> diagnose -> fix -> re-run loop is the most

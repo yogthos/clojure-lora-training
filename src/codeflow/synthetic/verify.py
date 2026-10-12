@@ -1,8 +1,8 @@
-"""Ground synthetic REPL solutions in real babashka execution.
+"""Ground synthetic REPL solutions in real execution in a Jolt nREPL session.
 
 A generated solution interleaves ``;; eval: <form>`` with ``;; result: <out>``
 lines and ends with a ``;; apply:`` diff. The results are LLM-fabricated. This
-module extracts the forms, runs them through the bb_eval harness, rewrites each
+module extracts the forms, runs them through the jolt_eval harness, rewrites each
 ``;; result:`` with the real value, and reports how many forms actually ran —
 the signal the pipeline uses to keep or drop a solution.
 """
@@ -11,7 +11,7 @@ import re
 from dataclasses import dataclass
 from typing import List, Optional
 
-from .bb_eval import EvalResult, eval_forms
+from .jolt_eval import EvalResult, eval_forms
 
 _EVAL_RE = re.compile(r"^\s*;;\s*eval:\s?(.*)$")
 _RESULT_RE = re.compile(r"^\s*;;\s*result:\s?(.*)$")
@@ -233,14 +233,14 @@ def ground_solution(
     return "\n".join(out)
 
 
-def _ground(solution, timeout, bb_path, cls):
+def _ground(solution, timeout, jolt_path, cls):
     blocks = extract_eval_blocks(solution)
     malformed = sum(1 for b in blocks if b.malformed)
     forms = [b.form for b in blocks if not b.malformed]
     if not forms:
         return cls(solution=solution, total=0, passed=0, results=[], malformed=malformed)
 
-    results = eval_forms(forms, timeout=timeout, bb_path=bb_path)
+    results = eval_forms(forms, timeout=timeout, jolt_path=jolt_path)
     grounded = ground_solution(solution, blocks, results)
     passed = sum(1 for r in results if r.ok)
     return cls(
@@ -254,21 +254,21 @@ def _ground(solution, timeout, bb_path, cls):
 
 def verify_and_ground(
     solution: str,
-    timeout: float = 30.0,
-    bb_path: str = "bb",
+    timeout: float = 10.0,
+    jolt_path: str = "jolt",
 ) -> GroundedSolution:
     """Extract, execute, and ground a solution's REPL forms.
 
     Returns the rewritten solution and metrics. A solution with no forms is
     reported with all_ok False — there is nothing to vouch for.
     """
-    return _ground(solution, timeout, bb_path, GroundedSolution)
+    return _ground(solution, timeout, jolt_path, GroundedSolution)
 
 
 def verify_workflow(
     solution: str,
-    timeout: float = 30.0,
-    bb_path: str = "bb",
+    timeout: float = 10.0,
+    jolt_path: str = "jolt",
 ) -> GradedWorkflow:
     """Verify+ground a workflow trace, judging end-state correctness tolerantly.
 
@@ -276,4 +276,4 @@ def verify_workflow(
     whose reaches_correct_end_state allows intermediate failures (the taught
     error->fix arc) provided the final demonstration runs cleanly.
     """
-    return _ground(solution, timeout, bb_path, GradedWorkflow)
+    return _ground(solution, timeout, jolt_path, GradedWorkflow)
