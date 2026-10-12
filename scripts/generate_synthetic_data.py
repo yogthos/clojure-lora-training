@@ -311,8 +311,14 @@ def step_select_coreset(
 ) -> List[dict]:
     """Step 6: Select diverse coreset."""
     combined = []
+    # Training records carry no feature field, so the feature each synthetic
+    # example came from is kept alongside, keyed by position. Mined examples
+    # have none; selection fills the remaining slots from them.
+    features: Dict[int, List[str]] = {}
 
     for r in synthetic:
+        if r.feature_used:
+            features[len(combined)] = [r.feature_used]
         combined.append(r.to_training_example())
 
     if mined:
@@ -321,11 +327,23 @@ def step_select_coreset(
     if args.no_coreset or len(combined) <= args.target:
         return combined
 
+    index = {id(ex): i for i, ex in enumerate(combined)}
     return select_by_feature_diversity(
         combined,
+        extract_fn=lambda ex: features.get(index[id(ex)], []),
         target_size=args.target,
         seed=args.seed,
     )
+
+
+def split_dir_for(output: str) -> str:
+    """Directory for an output file's train/val splits.
+
+    Named after the output so a run with a different --output doesn't
+    overwrite another run's splits (a shared <outdir>/splits did).
+    """
+    out = Path(output)
+    return str(out.parent / f"{out.stem}_splits")
 
 
 def main():
@@ -401,7 +419,7 @@ def main():
     if args.val_split > 0:
         train_path, val_path = split_jsonl(
             args.output,
-            str(Path(args.output).parent / "splits"),
+            split_dir_for(args.output),
             train_ratio=1.0 - args.val_split,
             seed=args.seed,
         )

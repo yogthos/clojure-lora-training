@@ -214,16 +214,20 @@ def select_by_feature_diversity(
     """Select a diverse subset by feature coverage.
 
     Ensures selected examples cover a wide range of Clojure features
-    and development patterns.
+    and development patterns. Coverage picks one example per feature; the
+    remaining slots are filled at random from the rest, so the result always
+    has min(target_size, len(examples)) items — examples without features
+    (e.g. mined data) are still eligible rather than silently dropped.
 
     Args:
-        examples: Training examples with "features" field.
-        feature_extractor: Function (example) → feature list.
+        examples: Training examples, optionally with a "features" field.
+        extract_fn: Function (example) → feature list. Defaults to the
+            example's "features" (or "feature") field.
         target_size: Target coreset size.
         seed: Random seed.
 
     Returns:
-        Selected examples.
+        Selected examples, in their original order.
     """
     if len(examples) <= target_size:
         return examples
@@ -241,29 +245,30 @@ def select_by_feature_diversity(
     # Build feature → example index
     feature_to_examples: Dict[str, List[int]] = {}
     for i, ex in enumerate(examples):
-        feats = extract_fn(ex)
-        for f in feats:
-            fkey = f.lower().strip()
-            if fkey not in feature_to_examples:
-                feature_to_examples[fkey] = []
-            feature_to_examples[fkey].append(i)
+        for f in extract_fn(ex) or []:
+            if isinstance(f, dict):
+                f = f.get("name", "")
+            if not isinstance(f, str) or not f.strip():
+                continue
+            feature_to_examples.setdefault(f.lower().strip(), []).append(i)
 
-    # Greedy coverage selection
+    # Greedy coverage selection: one example per feature, features visited in
+    # random order (sorted first so the seed alone decides the order).
     selected: Set[int] = set()
-    remaining_features = set(feature_to_examples.keys())
-
-    while len(selected) < target_size and remaining_features:
-        # Pick the least-covered feature
-        feat = rng.choice(list(remaining_features))
+    features = sorted(feature_to_examples)
+    rng.shuffle(features)
+    for feat in features:
+        if len(selected) >= target_size:
+            break
         candidates = [
             i for i in feature_to_examples[feat] if i not in selected
         ]
         if candidates:
             selected.add(rng.choice(candidates))
-        remaining_features.discard(feat)
 
-        # Break if no new selections being made
-        if len(selected) >= target_size:
-            break
+    # Fill the remaining slots from everything not yet selected.
+    if len(selected) < target_size:
+        rest = [i for i in range(len(examples)) if i not in selected]
+        selected.update(rng.sample(rest, target_size - len(selected)))
 
-    return [examples[i] for i in selected]
+    return [examples[i] for i in sorted(selected)]
