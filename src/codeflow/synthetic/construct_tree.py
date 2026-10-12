@@ -13,6 +13,7 @@ The tree is used for:
 """
 
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple
 from collections import defaultdict
@@ -228,18 +229,7 @@ def assign_features_to_tree(
     }
 
     for feat in features:
-        ftype = feat.get("feature_type", "").lower().strip()
-        category = _ROUTING.get(ftype)
-
-        if category is None:
-            # Try partial matches
-            for key, cat in _ROUTING.items():
-                if key in ftype or ftype in key:
-                    category = cat
-                    break
-
-        if category is None:
-            category = "data-transformation"  # default bucket
+        category = _route_category(feat, _ROUTING)
 
         # Find the best subcategory node
         sub_node = _best_subcategory(category, feat, tree)
@@ -247,6 +237,37 @@ def assign_features_to_tree(
             tree.nodes[sub_node].features.append(feat)
 
     return tree
+
+
+def _norm(text: str) -> str:
+    """Lowercase with hyphens as spaces, so slugs and labels compare equal."""
+    return text.lower().replace("-", " ").strip()
+
+
+def _route_category(feat: dict, routing: Dict[str, str]) -> str:
+    """Pick the root category for a feature.
+
+    Routes on feature_type first. An empty type must not take part in
+    substring matching ('"" in key' is true for every key, which sent every
+    untyped feature to the first entry, metaprogramming); untyped or
+    unrecognised features are routed by a routing keyword in their name or
+    description, then fall back to the default bucket.
+    """
+    ftype = feat.get("feature_type", "").lower().strip()
+    if ftype:
+        if ftype in routing:
+            return routing[ftype]
+        # Try partial matches
+        for key, cat in routing.items():
+            if key in ftype or ftype in key:
+                return cat
+
+    text = _norm(f"{feat.get('name', '')} {feat.get('description', '')}")
+    for key, cat in routing.items():
+        if re.search(rf"\b{re.escape(_norm(key))}\b", text):
+            return cat
+
+    return "data-transformation"  # default bucket
 
 
 def _best_subcategory(
@@ -263,22 +284,25 @@ def _best_subcategory(
     if not cat_node.children:
         return category
 
-    ftype = feat.get("feature_type", "").lower()
-    desc = feat.get("description", "").lower()
-    name = feat.get("name", "").lower()
+    ftype = _norm(feat.get("feature_type", ""))
+    desc = _norm(feat.get("description", ""))
+    name = _norm(feat.get("name", ""))
 
     scored = []
     for child_name in cat_node.children:
         child = tree.nodes.get(child_name)
         if child is None:
             continue
-        child_label = child.label.lower()
+        child_label = _norm(child.label)
         score = 0
-        # Exact match on feature_type
-        if child_label in ftype or ftype in child_label:
+        # Match on feature_type (never on an empty one, which is a substring
+        # of every label)
+        if ftype and (child_label in ftype or ftype in child_label):
             score += 3
         # Match in description
-        if any(w in desc for w in child_label.split()):
+        if child_label in desc:
+            score += 2
+        elif any(w in desc for w in child_label.split()):
             score += 1
         # Match in name
         if child_label in name:
