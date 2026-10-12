@@ -75,7 +75,7 @@ def _read_file_safe(path: Path, max_lines: int = 300) -> Optional[str]:
             tail = "\n".join(lines[-max_lines + 50:])
             return f"{head}\n\n;; ... {len(lines) - max_lines} lines omitted ...\n\n{tail}"
         return content
-    except Exception:
+    except (OSError, ValueError):  # unreadable, or not UTF-8
         return None
 
 

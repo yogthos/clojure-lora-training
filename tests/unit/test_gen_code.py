@@ -222,3 +222,24 @@ class TestCodePromptConsistency:
         from src.codeflow.synthetic.prompts import CODE_SYSTEM
         assert "sensible file paths" not in CODE_SYSTEM
         assert "/dev/null" in CODE_SYSTEM
+
+
+class TestAnalysisErrors:
+    def test_programming_error_not_swallowed(self):
+        class _Broken:
+            def call(self, *a, **k):
+                raise TypeError("bad signature")
+        with pytest.raises(TypeError):
+            generate_analysis("task", _Broken())
+
+    def test_bad_json_returns_none(self):
+        class _Bad:
+            def call(self, *a, **k):
+                return "not json"
+        assert generate_analysis("task", _Bad()) is None
+
+    def test_empty_list_returns_none(self):
+        class _Empty:
+            def call(self, *a, **k):
+                return "[]"
+        assert generate_analysis("task", _Empty()) is None

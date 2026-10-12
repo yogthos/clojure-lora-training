@@ -90,14 +90,19 @@ def generate_analysis(
             max_tokens=2048,
             require_json=True,
         )
-        analysis = json.loads(result) if isinstance(result, str) else result
-        if isinstance(analysis, list):
-            analysis = analysis[0] if analysis else {}
-        return analysis if isinstance(analysis, dict) else None
     except LLMAuthError:
         raise
-    except (LLMError, ValueError, TypeError, IndexError):
+    except LLMError:
         return None
+
+    try:
+        analysis = json.loads(result) if isinstance(result, str) else result
+    except ValueError:
+        return None
+    if isinstance(analysis, list):
+        analysis = analysis[0] if analysis else None
+    # An empty analysis plans nothing; treat it as a failed pass.
+    return analysis if isinstance(analysis, dict) and analysis else None
 
 
 def generate_code(
