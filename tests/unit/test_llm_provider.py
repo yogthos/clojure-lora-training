@@ -213,3 +213,19 @@ class TestCallWithHistory:
         # Check that all messages were passed (system + history)
         assert len(provider.last_messages) == 4
         assert provider.last_messages[0].role == MessageRole.SYSTEM
+
+
+class TestOllamaUnreachable:
+    def test_fails_fast_when_server_is_down(self, monkeypatch):
+        # Every call would fail the same way; a run must stop, not drain its
+        # whole input and report zero kept.
+        import requests
+        from src.llm.ollama import OllamaProvider
+        from src.llm.provider import LLMProviderConfig, LLMUnavailableError
+
+        def refuse(*a, **k):
+            raise requests.exceptions.ConnectionError("refused")
+        monkeypatch.setattr(requests, "get", refuse)
+        with pytest.raises(LLMUnavailableError, match="Ollama"):
+            OllamaProvider(LLMProviderConfig(api_key="", base_url="http://localhost:1",
+                                             model="m", max_tokens=8, temperature=0.0))

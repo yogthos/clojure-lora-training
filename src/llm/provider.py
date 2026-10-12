@@ -48,6 +48,12 @@ class LLMAuthError(LLMError):
     pass
 
 
+class LLMUnavailableError(LLMAuthError):
+    """The provider can't be reached at all (local server not running). Fatal
+    for the same reason as an auth error."""
+    pass
+
+
 class LLMTruncatedError(LLMResponseError):
     """Raised when a response was cut off at max_tokens and the caller can't use it."""
     pass
