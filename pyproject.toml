@@ -27,7 +27,11 @@ test = ["pytest>=7.0.0", "pytest-cov>=4.0.0"]
 dev = ["clojure-lora-trainer[test,api,mlx,json-repair]"]
 
 [dependency-groups]
-dev = ["pytest>=7.0.0", "pytest-cov>=4.0.0"]
+dev = [
+    "gguf>=0.17",
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+]
 
 [project.scripts]
 clj-lora-mine = "src.codeflow.cli.mine_clojure_repos:main"
