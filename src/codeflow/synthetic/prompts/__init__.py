@@ -23,6 +23,7 @@ QUESTION_SYSTEM = _load("question_system")
 CONSTRUCT_TREE_SYSTEM = _load("construct_tree_system")
 BACKTRANSLATE_SYSTEM = _load("backtranslate_system")
 LIVE_SYSTEM = _load("live_system")
+RATIONALE_SYSTEM = _load("rationale_system")
 
 __all__ = [
     "BACKTRANSLATE_SYSTEM",
@@ -33,4 +34,5 @@ __all__ = [
     "EXTRACT_SYSTEM",
     "LIVE_SYSTEM",
     "QUESTION_SYSTEM",
+    "RATIONALE_SYSTEM",
 ]

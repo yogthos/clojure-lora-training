@@ -16,12 +16,12 @@ Usage:
 
 import argparse
 import json
-import os
 import sys
 from dataclasses import asdict
 from pathlib import Path
 
 
+from src.llm.env import provider_from_env
 from src.shared import load_jsonl, trim_torn_tail
 from src.codeflow.synthetic.jolt_eval import JoltSession, jolt_available
 from src.codeflow.synthetic.prompt_mining import MinedPrompt, mine_prompts
@@ -56,23 +56,7 @@ def parse_args() -> argparse.Namespace:
 
 def setup_llm():
     """LLM provider from LLM_PROVIDER (deepseek|ollama)."""
-    from src.llm.provider import LLMProviderConfig
-
-    provider = os.environ.get("LLM_PROVIDER", "ollama")
-    if provider == "deepseek":
-        from src.llm.deepseek import DeepSeekProvider
-        return DeepSeekProvider(LLMProviderConfig(
-            api_key=os.environ.get("DEEPSEEK_API_KEY", ""),
-            base_url=os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
-            model=os.environ.get("DEEPSEEK_MODEL", "deepseek-chat"),
-            max_tokens=8192, temperature=0.5, timeout=120,
-        ))
-    from src.llm.ollama import OllamaProvider
-    return OllamaProvider(LLMProviderConfig(
-        api_key="", base_url=os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434"),
-        model=os.environ.get("OLLAMA_MODEL", "qwen2.5-coder:14b"),
-        max_tokens=8192, temperature=0.5, timeout=120,
-    ))
+    return provider_from_env(max_tokens=8192, temperature=0.5)
 
 
 def session_factory(args):

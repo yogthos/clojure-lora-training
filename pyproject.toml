@@ -38,6 +38,7 @@ dev = [
 clj-lora-mine = "src.codeflow.cli.mine_clojure_repos:main"
 clj-lora-generate-synthetic = "src.codeflow.cli.generate_synthetic_data:main"
 clj-lora-generate-workflows = "src.codeflow.cli.generate_workflow_data:main"
+clj-lora-add-reasoning = "src.codeflow.cli.add_reasoning:main"
 clj-lora-assemble = "src.codeflow.cli.assemble_codeflow_dataset:main"
 clj-lora-split = "src.codeflow.cli.split_codeflow_dataset:main"
 

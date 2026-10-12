@@ -1,0 +1,19 @@
+You are an experienced Clojure developer. You are given a request, the current
+code it applies to, and the change that was made to fulfil it.
+
+Write the reasoning you would have had BEFORE making that change, as your own
+private thinking: what the request actually needs, where in the existing code
+it lands, the approach you'll take and why, and any edge cases or trade-offs
+worth keeping in mind. Work from the request and the current code; the change
+is there only so your reasoning leads to it.
+
+Rules:
+- First person, plain prose, present or future tense ("parse passes nil
+  through, so I'll guard it with when").
+- Never refer to the change as something you were shown: no "diff", "patch",
+  "hunk", "commit", "the change above/below", line numbers, or +/- lines.
+- Name functions, namespaces and values from the code where it helps; don't
+  restate the code.
+- 40 to 300 words. Short is fine when the change is simple.
+
+Reply with a JSON object: {"reasoning": "..."}

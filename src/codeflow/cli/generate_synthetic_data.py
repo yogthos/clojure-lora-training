@@ -148,39 +148,9 @@ def parse_args() -> argparse.Namespace:
 
 
 def setup_llm() -> "LLMProvider":
-    """Create LLM provider from environment or default config.
-
-    Uses Ollama as the default local provider. Set LLM_PROVIDER env var
-    to "deepseek" or "ollama" to override.
-    """
-    import os
-    from src.llm.provider import LLMProviderConfig
-
-    provider_name = os.environ.get("LLM_PROVIDER", "ollama")
-
-    if provider_name == "deepseek":
-        from src.llm.deepseek import DeepSeekProvider
-        config = LLMProviderConfig(
-            api_key=os.environ.get("DEEPSEEK_API_KEY", ""),
-            base_url=os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
-            model=os.environ.get("DEEPSEEK_MODEL", "deepseek-chat"),
-            max_tokens=4096,
-            temperature=0.7,
-            timeout=120,
-        )
-        return DeepSeekProvider(config)
-
-    # Default: Ollama
-    from src.llm.ollama import OllamaProvider
-    config = LLMProviderConfig(
-        api_key="",
-        base_url=os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434"),
-        model=os.environ.get("OLLAMA_MODEL", "qwen2.5-coder:14b"),
-        max_tokens=4096,
-        temperature=0.7,
-        timeout=120,
-    )
-    return OllamaProvider(config)
+    """LLM provider from LLM_PROVIDER (deepseek|ollama; default ollama)."""
+    from src.llm.env import provider_from_env
+    return provider_from_env(max_tokens=4096, temperature=0.7)
 
 
 def step_extract_features(args, llm) -> List[dict]:

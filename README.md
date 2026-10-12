@@ -64,6 +64,12 @@ uv run python3 scripts/generate_synthetic_data.py \
     --output data/synthetic/output \
     --target 500
 
+# Reasoning: thinking mode trains a <think> block on every answer, so mined
+# transitions get the reasoning behind each change (needs an LLM)
+LLM_PROVIDER=deepseek uv run clj-lora-add-reasoning \
+    --input data/git-mining/output/mined.jsonl \
+    --output data/assemble/git/mined.jsonl
+
 # Assembly: merge, deduplicate, balance, format
 uv run python3 scripts/assemble_codeflow_dataset.py \
     --git-dir data/git-mining/output \
@@ -71,7 +77,8 @@ uv run python3 scripts/assemble_codeflow_dataset.py \
     --output data/training/codeflow.jsonl
 
 # The same commands are installed as clj-lora-mine, clj-lora-generate-synthetic,
-# clj-lora-generate-workflows, clj-lora-assemble and clj-lora-split.
+# clj-lora-generate-workflows, clj-lora-add-reasoning, clj-lora-assemble and
+# clj-lora-split.
 
 # Run tests
 uv run python3 -m pytest
