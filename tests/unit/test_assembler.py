@@ -141,9 +141,27 @@ class TestClassifyExample:
         ex = {"instruction": "optimize the transducer pipeline with lazy-seq"}
         assert classify_example(ex) == "optimize"
 
-    def test_uses_output_fallback(self):
-        ex = {"instruction": "update things", "output": ";; fix: handle edge case"}
-        assert classify_example(ex) == "bug-fix"
+    def test_ignores_code_in_output_and_input(self):
+        # Code is full of words like "add", "test" and "error"; the change type
+        # is what was asked for.
+        ex = {"instruction": "rename the config loader",
+              "input": "(defn add-error-handler [])", "output": "+(deftest add-test)"}
+        assert classify_example(ex) == "refactor"
+
+    @pytest.mark.parametrize("instruction", [
+        "update the prefix of the address field",   # fix in prefix, add in address
+        "handle the latest dependency",              # test in latest
+    ])
+    def test_keywords_match_whole_words(self, instruction):
+        assert classify_example({"instruction": instruction}) == "refactor"
+
+    @pytest.mark.parametrize("instruction,kind", [
+        ("fixes the retry loop", "bug-fix"),
+        ("added streaming support", "add-feature"),
+        ("adding tests for the parser", "test"),
+    ])
+    def test_inflections_match(self, instruction, kind):
+        assert classify_example({"instruction": instruction}) == kind
 
     def test_unknown_defaults_to_refactor(self):
         ex = {"instruction": "do something vague"}
@@ -191,10 +209,12 @@ class TestBalanceByType:
         result = balance_by_type(recs, max_per_type=100)
         assert len(result) == 3
 
-    def test_uses_default_max_when_none(self):
-        recs = [{"instruction": f"fix {i}", "output": "d"} for i in range(100)]
-        result = balance_by_type(recs)
-        assert len(result) == len(recs)  # default max computed from smallest type
+    def test_none_means_no_cap(self):
+        # Capping every type at the smallest one by default silently threw away
+        # most of the data.
+        recs = ([{"instruction": f"fix bug {i}", "output": "d"} for i in range(100)]
+                + [{"instruction": f"refactor {i}", "output": "d"} for i in range(2)])
+        assert len(balance_by_type(recs)) == 102
 
 
 class TestFilterByLength:
@@ -392,3 +412,26 @@ class TestAssembleDataset:
             # ...and more than one variant is actually used (no attention collapse).
             assert len({r["system"] for r in git}) > 1
             assert len({r["system"] for r in synth}) > 1
+
+
+_BAD_COUNTS = (";; eval: (+ 1 2)\n;; result: 3\n;; apply:\n"
+               "diff --git a/f.clj b/f.clj\n--- a/f.clj\n+++ b/f.clj\n"
+               "@@ -1,5 +1,9 @@\n (ns f)\n-(def a 1)\n+(def a 2)\n")
+
+
+def test_synthetic_hunk_counts_are_repaired(tmp_path):
+    # Older traces predate the generator's header repair; their bodies are
+    # fine, only the @@ counts are off.
+    git, synth = tmp_path / "git", tmp_path / "synth"
+    git.mkdir(); synth.mkdir()
+    _write_jsonl(synth / "s.jsonl", [{"instruction": "bump a", "output": _BAD_COUNTS}])
+    _write_jsonl(git / "g.jsonl", [{"instruction": "bump b", "output": _BAD_COUNTS[40:]}])
+    out = assemble_dataset([git], [synth], tmp_path / "o.jsonl", min_changed_lines=0)
+    by_src = {r["source"]: r["output"] for r in out}
+    assert "@@ -1,2 +1,2 @@" in by_src["synthetic"]
+    assert "@@ -1,5 +1,9 @@" in by_src["git"]   # mined diffs are re-mined, not patched
+
+
+def test_multi_message_ties_prefer_bug_fix():
+    ex = {"instruction": "Remove unneeded expiry test; Fix admin logic; Refactor for readability"}
+    assert classify_example(ex) == "bug-fix"

@@ -12,6 +12,20 @@ from src.codeflow.cli.assemble_codeflow_dataset import (
 )
 
 
+class _CharTokenizer:
+    def apply_chat_template(self, messages, tokenize=False, **kw):
+        text = "".join(m["content"] for m in messages)
+        return {"input_ids": list(text)} if tokenize else text
+
+
+@pytest.fixture(autouse=True)
+def char_tokenizer(monkeypatch):
+    import src.codeflow.cli.assemble_codeflow_dataset as cli
+    loaded = []
+    monkeypatch.setattr(cli, "load_tokenizer", lambda name: loaded.append(name) or _CharTokenizer())
+    return loaded
+
+
 def _write_jsonl(path: Path, records: list[dict]) -> None:
     with open(path, "w") as f:
         for rec in records:
@@ -65,6 +79,12 @@ class TestParseArgs:
         ]):
             args = parse_args()
             assert args.max_per_type == 100
+
+    def test_token_filter_defaults_to_training_config(self):
+        with patch("sys.argv", ["a", "--git-dir", "g", "--synth-dir", "s", "--output", "o"]):
+            args = parse_args()
+        assert args.tokenizer == "Qwen/Qwen3.6-27B"
+        assert args.cutoff_len == 16384
 
     def test_flags(self):
         with patch("sys.argv", [
@@ -198,3 +218,24 @@ class TestMainIntegration:
 
             assert result == 0
             assert output.exists() or True  # Should not crash
+
+
+def test_records_over_cutoff_are_dropped(tmp_path, char_tokenizer):
+    git, synth = tmp_path / "git", tmp_path / "synth"
+    git.mkdir(); synth.mkdir()
+    diff = ("diff --git a/f.clj b/f.clj\n--- a/f.clj\n+++ b/f.clj\n"
+            "@@ -1,2 +1,2 @@\n (ns f)\n-(def a 1)\n+(def a 2)\n")
+    _write_jsonl(git / "d.jsonl", [
+        {"instruction": "change the default value of a", "output": diff, "repo": "r"},
+        {"instruction": "change the default value of b", "output": diff + "+" * 0,
+         "input": "x" * 5000, "repo": "r"},
+    ])
+    _write_jsonl(synth / "d.jsonl", [])
+    out = tmp_path / "o.jsonl"
+    with patch("sys.argv", ["a", "--git-dir", str(git), "--synth-dir", str(synth),
+                            "--output", str(out), "--min-changed-lines", "0",
+                            "--cutoff-len", "4000", "--no-validate"]):
+        assert main() == 0
+    recs = [json.loads(l) for l in out.read_text().splitlines()]
+    assert [r["instruction"] for r in recs] == ["change the default value of a"]
+    assert char_tokenizer == ["Qwen/Qwen3.6-27B"]

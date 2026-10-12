@@ -107,3 +107,9 @@ class TestLLMFailures:
 
         with pytest.raises(LLMAuthError):
             mine_prompts([{"instruction": "add nested schema support"}], NoAuth())
+
+
+def test_mined_prompt_keeps_source_repo():
+    llm = _FakeLLM({"user_prompt": "please add nested schemas", "project_context": "lib"})
+    out = mine_prompts([{"instruction": "add support for nested schemas", "repo": "o__lib"}], llm)
+    assert out[0].source_repo == "o__lib"

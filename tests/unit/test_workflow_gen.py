@@ -123,6 +123,13 @@ class TestGenerateOne:
         assert r.user_prompt == _PROMPT.user_prompt
         assert ";; Goal:" in r.solution
 
+    def test_training_example_carries_source_repo(self):
+        llm = _FakeLLM(plan={"goal": "g", "steps": [{"name": "s"}]}, trace=_TRACE)
+        prompt = MinedPrompt(user_prompt="u", project_context="lib",
+                             source_instruction="c", source_repo="o__lib")
+        r = generate_one(prompt, llm, verify=False)
+        assert r.to_training_example()["repo"] == "o__lib"
+
     def test_drops_empty_solution(self):
         llm = _FakeLLM(plan={"goal": "g", "steps": [{"name": "s"}]}, trace="   ")
         assert generate_one(_PROMPT, llm, verify=False) is None

@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import Callable, List, Optional
 
 from ...llm.provider import LLMAuthError, LLMError, LLMProvider
-from ..diffs import apply_section_errors, check_patch, extract_diff, fix_hunk_headers
+from ..diffs import apply_section_errors, repair_trace_diff
 from ...shared import _WORKFLOW_SYSTEM_PROMPT
 from .prompt_mining import MinedPrompt
 from .prompts import PLAN_SYSTEM as _PLAN_SYSTEM, WORKFLOW_SYSTEM as _WORKFLOW_SYSTEM
@@ -28,6 +28,7 @@ class WorkflowResult:
     solution: str
     verified: bool = False
     pass_rate: float = 1.0
+    repo: str = ""   # source commit's repo, for the grouped split
 
     def to_training_example(self) -> dict:
         """LLaMA-Factory record. Planning lives in the output, not the input."""
@@ -37,6 +38,7 @@ class WorkflowResult:
             "instruction": self.user_prompt,
             "input": f"Project: {ctx}" if ctx else "",
             "output": self.solution,
+            "repo": self.repo,
         }
 
     def to_jsonl(self) -> str:
@@ -132,21 +134,6 @@ def _has_repetition_loop(text: str) -> bool:
     return any(len(set(m.group(1))) >= 4 for m in _REPETITION_RE.finditer(own))
 
 
-def _repair_diff(solution: str) -> Optional[str]:
-    """Recompute the trailing diff's hunk counts; None if it's still not a patch.
-
-    LLMs get @@ counts wrong far more often than the hunk bodies, so the counts
-    are rebuilt from the bodies before the patch is checked.
-    """
-    diff = extract_diff(solution)
-    if not diff:
-        return None
-    fixed = fix_hunk_headers(diff)
-    if check_patch(fixed) is not None:
-        return None
-    return solution[: len(solution) - len(diff)] + fixed
-
-
 def generate_one(
     prompt: MinedPrompt,
     llm: LLMProvider,
@@ -178,7 +165,7 @@ def generate_one(
         verified = True
         pass_rate = graded.pass_rate
 
-    solution = _repair_diff(solution)
+    solution = repair_trace_diff(solution)
     if solution is None:
         return None
 
@@ -189,6 +176,7 @@ def generate_one(
         solution=solution,
         verified=verified,
         pass_rate=pass_rate,
+        repo=prompt.source_repo,
     )
 
 

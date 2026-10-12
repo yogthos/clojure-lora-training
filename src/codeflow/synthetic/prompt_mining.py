@@ -31,6 +31,7 @@ class MinedPrompt:
     user_prompt: str
     project_context: str
     source_instruction: str
+    source_repo: str = ""   # repo of the source commit, for the grouped split
 
 
 def is_substantive(instruction: str) -> bool:
@@ -51,6 +52,7 @@ def is_substantive(instruction: str) -> bool:
 def backtranslate_prompt(
     instruction: str,
     llm: LLMProvider,
+    source_repo: str = "",
 ) -> Optional[MinedPrompt]:
     """Turn one commit message into a user request + project context.
 
@@ -86,6 +88,7 @@ def backtranslate_prompt(
         user_prompt=user_prompt,
         project_context=project_context,
         source_instruction=instruction,
+        source_repo=source_repo,
     )
 
 
@@ -108,7 +111,7 @@ def mine_prompts(
         if not instruction or instruction in seen:
             continue
         seen.add(instruction)
-        mined = backtranslate_prompt(instruction, llm)
+        mined = backtranslate_prompt(instruction, llm, source_repo=rec.get("repo", ""))
         if mined is not None:
             prompts.append(mined)
     return prompts

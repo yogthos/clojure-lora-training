@@ -5,6 +5,7 @@ Produces a merged JSONL dataset ready for LLaMA-Factory training.
 
 import json
 import random
+import re
 from collections import Counter
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -15,6 +16,7 @@ from ...shared import (
     TRANSITION_SYSTEM_PROMPTS,
     WORKFLOW_SYSTEM_PROMPTS,
 )
+from ..diffs import repair_trace_diff
 from ..git_mining.miner import clean_instruction
 
 # ── Classification keyword sets ──────────────────────────────────────────
@@ -27,7 +29,7 @@ _BUG_KEYWORDS = [
 
 _REFACTOR_KEYWORDS = [
     "refactor", "cleanup", "clean up", "restructure", "reorganize",
-    "simplify", "extract", "rename", "move", "rename", "dry",
+    "simplify", "extract", "rename", "move", "dry",
     "technical debt", "tech debt", "redundant", "consolidate",
     "split", "merge", "decompose", "composition", "extract function",
 ]
@@ -41,7 +43,7 @@ _FEATURE_KEYWORDS = [
 _OPTIMIZE_KEYWORDS = [
     "optimize", "performance", "perf", "faster", "slow", "speed",
     "memory", "reduce", "lazy", "cache", "memoize", "throughput",
-    "bottleneck", "profile", "transducer", "reduce",
+    "bottleneck", "profile", "transducer",
 ]
 
 _TEST_KEYWORDS = [
@@ -57,27 +59,26 @@ _DOCS_KEYWORDS = [
 def classify_example(example: dict) -> str:
     """Classify a training example by change type.
 
-    Examines both the instruction and output fields for keyword signals.
-    Returns one of: bug-fix, refactor, add-feature, optimize, test, docs,
-    or refactor (default).
+    Reads only the instruction: that is what was asked for, while the code in
+    input/output is full of identifiers like ``add`` or ``error``. Returns one
+    of: bug-fix, refactor, add-feature, optimize, test, or refactor (default;
+    docs folds into it).
     """
-    text = " ".join([
-        example.get("instruction", ""),
-        example.get("output", ""),
-        example.get("input", ""),
-    ]).lower()
+    text = example.get("instruction", "").lower()
 
+    # Ties go to the earlier type. Mined instructions join several commit
+    # messages, so a fix wins over a passing mention of tests; "add" is the
+    # most generic verb ("add tests" is a test change) and comes last.
     scores = {
         "bug-fix": _count_keywords(text, _BUG_KEYWORDS),
+        "test": _count_keywords(text, _TEST_KEYWORDS),
+        "optimize": _count_keywords(text, _OPTIMIZE_KEYWORDS),
+        "docs": _count_keywords(text, _DOCS_KEYWORDS),
         "refactor": _count_keywords(text, _REFACTOR_KEYWORDS),
         "add-feature": _count_keywords(text, _FEATURE_KEYWORDS),
-        "optimize": _count_keywords(text, _OPTIMIZE_KEYWORDS),
-        "test": _count_keywords(text, _TEST_KEYWORDS),
-        "docs": _count_keywords(text, _DOCS_KEYWORDS),
     }
 
-    # Use the highest-scoring category
-    best = max(scores, key=scores.get)
+    best = max(scores, key=lambda k: scores[k])
     if scores[best] > 0:
         # docs is too sparse to balance as its own bucket; fold it into refactor
         # (both are non-behavioral cleanup) so there is no singleton category.
@@ -85,9 +86,29 @@ def classify_example(example: dict) -> str:
     return "refactor"
 
 
+def _keyword_re(keyword: str) -> "re.Pattern[str]":
+    # Whole words, allowing simple inflections: fix/fixes/fixed/fixing,
+    # add/adds/added/adding. "fix" doesn't match "prefix", "add" not "address".
+    stem = re.escape(keyword)
+    if keyword.endswith("e"):
+        inflect = r"(?:s|d)?|" + re.escape(keyword[:-1]) + "ing"
+        return re.compile(rf"\b(?:{stem}{inflect})\b")
+    last = re.escape(keyword[-1])
+    return re.compile(rf"\b{stem}(?:s|es|ed|ing|{last}ed|{last}ing)?\b")
+
+
+_KEYWORD_RES: Dict[str, "re.Pattern[str]"] = {}
+
+
 def _count_keywords(text: str, keywords: List[str]) -> int:
-    """Count how many keywords appear in the text."""
-    return sum(1 for kw in keywords if kw in text)
+    """Count how many keywords appear in the text as words."""
+    n = 0
+    for kw in keywords:
+        pat = _KEYWORD_RES.get(kw)
+        if pat is None:
+            pat = _KEYWORD_RES[kw] = _keyword_re(kw)
+        n += bool(pat.search(text))
+    return n
 
 
 def deduplicate(records: List[dict]) -> List[dict]:
@@ -199,10 +220,8 @@ def balance_by_type(
 ) -> List[dict]:
     """Balance the dataset so no single change type dominates.
 
-    If max_per_type is None, it is set to the count of the smallest type,
-    effectively capping all types at the minority class size.
-
-    Records beyond the cap are randomly sampled (not just truncated).
+    Types larger than ``max_per_type`` are randomly sampled down to it. None
+    means no cap: every record is kept.
     """
     if not records:
         return []
@@ -214,7 +233,7 @@ def balance_by_type(
         by_type.setdefault(t, []).append(rec)
 
     if max_per_type is None:
-        max_per_type = min(len(v) for v in by_type.values())
+        return list(records)
 
     rng = random.Random(seed)
     balanced = []
@@ -283,6 +302,15 @@ def assemble_dataset(
     for rec in records:
         if rec.get("instruction"):
             rec["instruction"] = clean_instruction(rec["instruction"])
+
+    # Synthetic traces generated before the generator repaired @@ counts have
+    # sound bodies with wrong headers; give them the same repair. Mined diffs
+    # with bad counts lost content in the old miner and need re-mining.
+    for rec in records:
+        if rec["source"] == "synthetic":
+            repaired = repair_trace_diff(rec.get("output", ""))
+            if repaired is not None:
+                rec["output"] = repaired
 
     records = deduplicate(records)
     records = filter_by_length(records, max_chars=max_chars)

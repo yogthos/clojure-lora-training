@@ -20,6 +20,8 @@ from pathlib import Path
 
 from src.codeflow.assembly.assembler import assemble_dataset
 from src.codeflow.assembly.formatter import format_jsonl_file
+from src.codeflow.assembly.token_length import filter_by_tokens, load_tokenizer
+from src.shared import load_jsonl, write_jsonl
 from src.codeflow.assembly.validator import validate_jsonl_file
 
 
@@ -56,16 +58,31 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=None,
         metavar="N",
-        help="Max records per change type for balancing (default: size of smallest type)",
+        help="Max records per change type for balancing (default: no cap)",
     )
     parser.add_argument(
         "--max-chars",
         type=int,
         default=50000,
         metavar="N",
-        help="Drop records whose instruction+input+output exceeds N chars "
-             "(~N/3500 tokens). Filters oversized git-mined examples that would "
-             "be truncated at train time. Default 50000; pass 0 to disable.",
+        help="Cheap pre-filter: drop records whose instruction+input+output "
+             "exceeds N chars, before the exact token filter. Default 50000; "
+             "pass 0 to disable.",
+    )
+    parser.add_argument(
+        "--tokenizer",
+        default="Qwen/Qwen3.6-27B",
+        metavar="NAME",
+        help="Tokenizer of the model being trained, for the length filter "
+             "(default: Qwen/Qwen3.6-27B, as in configs/codeflow_lora_qwen.yaml)",
+    )
+    parser.add_argument(
+        "--cutoff-len",
+        type=int,
+        default=16384,
+        metavar="N",
+        help="Drop records longer than N tokens after the chat template "
+             "(LLaMA-Factory cutoff_len; default 16384). Pass 0 to disable.",
     )
     parser.add_argument(
         "--min-changed-lines",
@@ -122,7 +139,9 @@ def main() -> int:
         print(f"  Max/type:     {args.max_per_type}")
     max_chars = args.max_chars or None  # treat 0 as "no limit"
     if max_chars:
-        print(f"  Max chars:    {max_chars} (~{max_chars // 3500}K tokens)")
+        print(f"  Max chars:    {max_chars}")
+    if args.cutoff_len:
+        print(f"  Cutoff:       {args.cutoff_len} tokens ({args.tokenizer})")
     if args.min_changed_lines:
         print(f"  Min Δ lines:  {args.min_changed_lines} (drops trivial diffs)")
 
@@ -148,7 +167,16 @@ def main() -> int:
     else:
         print("  Formatting:   skipped (--no-format)")
 
-    # Step 3: Validate
+    # Step 3: Drop what the trainer would truncate, measured on the rendered
+    # template (system prompts are assigned by now).
+    if args.cutoff_len:
+        kept, dropped = filter_by_tokens(load_jsonl(output_path),
+                                         load_tokenizer(args.tokenizer), args.cutoff_len)
+        write_jsonl(kept, output_path)
+        print(f"  Token filter: {len(kept)} kept, {len(dropped)} over {args.cutoff_len} tokens"
+              + (f" (longest {max(dropped)})" if dropped else ""))
+
+    # Step 4: Validate
     if not args.no_validate:
         report_path = Path(args.validation_report or str(output_path).replace(".jsonl", "_validation_report.json"))
         summary = validate_jsonl_file(

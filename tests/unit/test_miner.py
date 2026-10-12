@@ -591,3 +591,9 @@ class TestElisionMarkers:
                 "@@ -6,0 +6,2 @@\n+(defn g [] 0)\n+\n")
         out = self._fmt(diff)
         assert "f-2" in out and "f-3" in out
+
+
+def test_mined_record_carries_repo():
+    ex = MinedExample(repo_name="owner__lib", instruction="fix x", before={}, after={},
+                      diff="diff --git a/a b/a\n", changed_files=[])
+    assert ex.to_dict()["repo"] == "owner__lib"

@@ -59,6 +59,8 @@ class MinedExample:
             "instruction": self.instruction,
             "input": _format_changed_regions(self.before, self.diff),
             "output": self.diff,
+            # Not a training field: groups records by repo for the train/val split.
+            "repo": self.repo_name,
         }
 
     def to_jsonl(self) -> str:

@@ -148,3 +148,18 @@ def apply_section_errors(output: str) -> List[str]:
                 return []
             return ["';; apply:' is not followed by a diff --git header"]
     return ["trace has no ';; apply:' line"]
+
+
+def repair_trace_diff(solution: str) -> Optional[str]:
+    """Recompute the trailing diff's hunk counts; None if it's still not a patch.
+
+    LLMs get @@ counts wrong far more often than the hunk bodies, so the counts
+    are rebuilt from the bodies before the patch is checked.
+    """
+    diff = extract_diff(solution)
+    if not diff:
+        return None
+    fixed = fix_hunk_headers(diff)
+    if check_patch(fixed) is not None:
+        return None
+    return solution[: len(solution) - len(diff)] + fixed
