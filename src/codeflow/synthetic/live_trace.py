@@ -21,7 +21,10 @@ from typing import Callable, Dict, List, Optional
 from ...llm.provider import LLMAuthError, LLMError, LLMProvider
 from ..clj_text import top_level_forms
 from ..diffs import new_file_contents, repair_trace_diff
+from ...utils.logging import get_logger
 from .jolt_eval import EvalResult, JoltSession, render_observation
+
+logger = get_logger(__name__)
 from .prompts import LIVE_SYSTEM
 
 EVAL_TOOL = {
@@ -298,7 +301,9 @@ def _new_files_load(trace: LiveTrace, session_factory: Callable[..., JoltSession
         for content in files.values():
             ns = _ns_name(content)
             code = f"(require '{ns})" if ns else content
-            if not session.eval(code).ok:
+            result = session.eval(code)
+            if not result.ok:
+                logger.info("new file doesn't load: %s", render_observation(result)[:500])
                 return False
         return True
     finally:
