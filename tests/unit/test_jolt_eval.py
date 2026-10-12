@@ -52,6 +52,16 @@ class TestEvalForms:
         assert "timed out" in rs[0].error.lower()
         assert rs[1].ok and rs[1].value == "5"
 
+    def test_runaway_recursion_is_killed_by_memory_cap(self):
+        import time
+        t = time.monotonic()
+        rs = eval_forms(["(defn f [x] (inc (f x)))", "(f 1)", "(+ 1 1)"],
+                        timeout=30.0, max_rss_mb=600)
+        assert time.monotonic() - t < 20
+        assert not rs[1].ok
+        assert "memory" in rs[1].error
+        assert not rs[2].ok  # the server is gone; nothing after it ran
+
     def test_infinite_seq_value_is_print_bounded(self):
         rs = eval_forms(["(range)"], timeout=5.0)
         assert rs[0].ok

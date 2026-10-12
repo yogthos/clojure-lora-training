@@ -48,6 +48,11 @@ PRINT_LENGTH = 100
 # MB; that is not a useful training signal.
 _MAX_FIELD_CHARS = 8000
 
+# Chez grows the stack on the heap, so runaway recursion doesn't overflow — it
+# eats memory (~250MB/s) until killed. Cap the server's resident size instead.
+DEFAULT_MAX_RSS_MB = 2048
+_RSS_POLL_INTERVAL = 0.25
+
 _STARTUP_TIMEOUT = 30.0
 _INTERRUPT_GRACE = 3.0
 
@@ -114,8 +119,10 @@ def _prefetch_deps(jolt_path: str) -> None:
 class _JoltServer:
     """A ``jolt nrepl-server`` process in its own work directory."""
 
-    def __init__(self, jolt_path: str, sandbox: bool, workdir: str):
+    def __init__(self, jolt_path: str, sandbox: bool, workdir: str,
+                 max_rss_mb: Optional[int] = None):
         self.workdir = workdir
+        self.killed_for_memory = False
         Path(workdir, "deps.edn").write_text(_DEPS_EDN)
         tmp = Path(workdir, "tmp")
         tmp.mkdir(exist_ok=True)
@@ -138,6 +145,27 @@ class _JoltServer:
             text=True, errors="replace", start_new_session=True,
         )
         self.port = self._await_port()
+        if max_rss_mb:
+            threading.Thread(target=self._watch_memory, args=(max_rss_mb,), daemon=True).start()
+
+    def _rss_mb(self) -> Optional[float]:
+        r = subprocess.run(["ps", "-o", "rss=", "-p", str(self.proc.pid)],
+                           capture_output=True, text=True)
+        try:
+            return int(r.stdout.strip()) / 1024
+        except ValueError:
+            return None
+
+    def _watch_memory(self, max_rss_mb: int) -> None:
+        """Kill the server once it outgrows ``max_rss_mb``; the open eval then
+        fails with a connection error, reported as out of memory."""
+        while self.proc.poll() is None:
+            rss = self._rss_mb()
+            if rss is not None and rss > max_rss_mb:
+                self.killed_for_memory = True
+                self.stop()
+                return
+            time.sleep(_RSS_POLL_INTERVAL)
 
     def _await_port(self) -> int:
         """Read the startup banner ("... started on port N ...") for the bound port."""
@@ -210,6 +238,7 @@ def eval_forms(
     timeout: float = 10.0,
     jolt_path: str = "jolt",
     sandbox: Optional[bool] = None,
+    max_rss_mb: Optional[int] = DEFAULT_MAX_RSS_MB,
 ) -> List[EvalResult]:
     """Evaluate ``forms`` in order in one fresh nREPL session.
 
@@ -218,7 +247,9 @@ def eval_forms(
     interrupt doesn't take (a form blocked in a foreign call), the server is
     killed and the remaining forms are reported as not run.
 
-    ``sandbox`` defaults to on wherever ``sandbox-exec`` exists (macOS).
+    ``sandbox`` defaults to on wherever ``sandbox-exec`` exists (macOS). A
+    server that grows past ``max_rss_mb`` (runaway recursion) is killed; that
+    form is reported out of memory and the rest as not run.
     """
     if not forms:
         return []
@@ -231,7 +262,8 @@ def eval_forms(
     server = client = None
     results: List[EvalResult] = []
     try:
-        server = _JoltServer(jolt_path, sandbox=sandbox, workdir=workdir)
+        server = _JoltServer(jolt_path, sandbox=sandbox, workdir=workdir,
+                             max_rss_mb=max_rss_mb)
         client = NReplClient("127.0.0.1", server.port)
         session = client.request({"op": "clone"}, _STARTUP_TIMEOUT)[-1]["new-session"]
         client.request({
@@ -246,6 +278,15 @@ def eval_forms(
                 continue
             except TimeoutError:
                 pass
+            except ConnectionError:
+                if not server.killed_for_memory:
+                    raise
+                results.append(EvalResult(
+                    form=form, ok=False,
+                    error=f"out of memory: server exceeded {max_rss_mb}MB (runaway recursion?)"))
+                results.extend(EvalResult(form=f, ok=False, error="not run: session lost")
+                               for f in forms[i + 1:])
+                break
             client.send({"op": "interrupt", "session": session, "interrupt-id": msg_id})
             try:
                 client.collect(msg_id, _INTERRUPT_GRACE)
