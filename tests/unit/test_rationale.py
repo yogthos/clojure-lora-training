@@ -41,6 +41,8 @@ def test_rationale_sees_request_code_and_change():
     "The diff adds a when guard. " * 4,          # talks about the answer
     "As the patch shows, " + _GOOD,
     "Looking at the hunk, " + _GOOD,
+    "This commit adds a guard. " + _GOOD,         # the change itself as a commit
+    "The commit below wraps parse. " + _GOOD,
     "Too short.",
     "word " * 600,                               # rambling
 ])
@@ -67,3 +69,9 @@ def test_long_inputs_are_capped_in_the_prompt():
     llm = _LLM(_GOOD)
     write_rationale(rec, llm)
     assert len(llm.prompts[0]) < 60_000
+
+
+def test_earlier_commits_from_the_history_may_be_mentioned():
+    # Inputs carry the files' recent history; building on it is forethought.
+    text = "The recent commits moved parsing into core, and the last commit left nil unhandled. " + _GOOD
+    assert write_rationale(_REC, _LLM(text)) == text

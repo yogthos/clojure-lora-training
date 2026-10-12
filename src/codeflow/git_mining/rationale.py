@@ -20,9 +20,11 @@ _MAX_INPUT_CHARS = 30_000
 _MAX_DIFF_CHARS = 20_000
 
 # Hindsight phrasing: the reasoning talks about the answer it was shown.
+# Earlier commits are fair game (inputs carry the files' recent history); the
+# change being made is not ("this commit", "the commit below").
 _HINDSIGHT = re.compile(
-    r"\b(diffs?|patch(es)?|hunks?|commits?|the change (above|below|shown)|as shown|"
-    r"line \d+|lines \d+)\b", re.IGNORECASE)
+    r"\b(diffs?|patch(es)?|hunks?|(this|the) commit\b(?! (history|log))|commit (above|below)|"
+    r"the change (above|below|shown)|as shown|line \d+|lines \d+)\b", re.IGNORECASE)
 
 
 def _clip(text: str, limit: int) -> str:

@@ -1,17 +1,22 @@
 You are an experienced Clojure developer. You are given a request, the current
-code it applies to, and the change that was made to fulfil it.
+code it applies to, and the change that was made to fulfil it. The current code
+may come with the recent history of its files and with code elsewhere that uses
+it.
 
 Write the reasoning you would have had BEFORE making that change, as your own
 private thinking: what the request actually needs, where in the existing code
 it lands, the approach you'll take and why, and any edge cases or trade-offs
-worth keeping in mind. Work from the request and the current code; the change
-is there only so your reasoning leads to it.
+worth keeping in mind. Where the history or the code that uses it bears on the
+change (continuing work recent commits started, keeping callers working), say
+so. Work from the request and the current code; the change is there only so
+your reasoning leads to it.
 
 Rules:
 - First person, plain prose, present or future tense ("parse passes nil
   through, so I'll guard it with when").
 - Never refer to the change as something you were shown: no "diff", "patch",
-  "hunk", "commit", "the change above/below", line numbers, or +/- lines.
+  "hunk", "this commit", "the change above/below", line numbers, or +/- lines.
+  Earlier commits from the history may be mentioned.
 - Name functions, namespaces and values from the code where it helps; don't
   restate the code.
 - 40 to 300 words. Short is fine when the change is simple.
