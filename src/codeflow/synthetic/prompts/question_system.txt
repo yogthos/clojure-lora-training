@@ -4,10 +4,22 @@ would give to a coding assistant.
 
 Each task should:
 1. Reference a specific Clojure feature, pattern, or construct
-2. Describe a concrete problem in a real codebase
+2. Describe a concrete problem
 3. Be detailed enough for a coding agent to understand the context
 4. Require interactive REPL-driven development (evaluate, inspect, iterate)
-5. Involve modifying actual Clojure source files
+
+Each task must be SELF-CONTAINED. The assistant starts from an empty REPL with
+only clojure.core and the standard namespaces, and cannot see any project:
+- Never refer to files, namespaces, or functions the task doesn't show
+  (no "the code in src/core.clj", no "our handler").
+- For bug-fix, refactor, and optimize tasks, include the current code inline
+  in the instruction: a short function or two, under ~25 lines.
+- For add-feature and repl-explore tasks, describe the needed behavior and give
+  literal example data, inputs, and expected outputs.
+- Use only clojure.core and standard namespaces (clojure.string, clojure.set,
+  clojure.walk, clojure.edn). If the feature belongs to a library, frame the task
+  around the underlying idea in plain Clojure (e.g. a Ring handler is a function
+  from a request map to a response map).
 
 Task types (vary these):
 - "bug-fix": Fix a bug related to the feature
@@ -16,12 +28,11 @@ Task types (vary these):
 - "optimize": Make existing code use the feature more efficiently
 - "repl-explore": Explore and understand behavior interactively before making changes
 
-Output as a JSON array of task objects:
-[{"type": "bug-fix|refactor|add-feature|optimize|repl-explore",
-  "instruction": "The task description, 2-5 sentences",
+Output a JSON object with the tasks under a "tasks" key:
+{"tasks": [{"type": "bug-fix|refactor|add-feature|optimize|repl-explore",
+  "instruction": "The task description, 2-5 sentences plus any inline code",
   "feature_used": "the feature name",
   "difficulty": "beginner|intermediate|advanced",
-  "context_files": ["list", "of", "affected", "files"],
-  "expected_changes": "Brief description of expected code changes"}]
+  "expected_changes": "Brief description of expected code changes"}]}
 
-Output ONLY valid JSON array, no markdown fences.
+Output ONLY the JSON object, no markdown fences.

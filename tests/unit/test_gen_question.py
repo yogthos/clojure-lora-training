@@ -9,7 +9,6 @@ from src.codeflow.synthetic.construct_tree import (
 from src.codeflow.synthetic.gen_question import (
     GeneratedTask,
     _build_task_prompt,
-    _generate_fallback_tasks,
     _split_budget,
     generate_tasks_from_node,
     generate_tasks_from_tree,
@@ -55,33 +54,6 @@ class TestGeneratedTask:
         assert task.task_type == "add-feature"
         assert task.instruction == ""
         assert task.difficulty == "intermediate"
-
-
-class TestFallbackTasks:
-    def test_generates_tasks(self):
-        node = FeatureTreeNode(
-            name="metaprogramming/macros",
-            label="Macros",
-            description="Custom syntax extensions",
-            parent="metaprogramming",
-            depth=1,
-        )
-        tasks = _generate_fallback_tasks(node, count=3)
-        assert len(tasks) == 3
-        assert all(isinstance(t, GeneratedTask) for t in tasks)
-        assert all(t.instruction for t in tasks)
-        assert all(t.feature_used for t in tasks)
-
-    def test_respects_count(self):
-        node = FeatureTreeNode(
-            name="concurrency/atoms-refs",
-            label="Atoms & Refs",
-            description="Mutable state",
-            parent="concurrency",
-            depth=1,
-        )
-        tasks = _generate_fallback_tasks(node, count=1)
-        assert len(tasks) == 1
 
 
 class TestTaskPrompt:
@@ -209,3 +181,123 @@ class TestGenerateTasksTemperature:
         # Both nodes get work when mixing a sharp and a smooth temperature.
         assert mixed.get("dense", 0) > 0
         assert mixed.get("sparse", 0) > 0
+
+
+import json
+import random
+
+from src.codeflow.synthetic.gen_question import _TASK_TEMPLATES, _MAX_TASKS_PER_CALL
+from src.codeflow.synthetic.prompts import QUESTION_SYSTEM
+
+
+def _macro_node():
+    return FeatureTreeNode(
+        name="metaprogramming/macros", label="Macros",
+        description="Custom syntax extensions", parent="metaprogramming", depth=1,
+        features=[{"feature_type": "macros", "name": "defmacro", "description": "d"}],
+    )
+
+
+class _TaskLLM:
+    """Answers each call with as many tasks as the prompt asks for, wrapped in
+    an object the way json_object mode returns them."""
+
+    def __init__(self, exc=None):
+        self.exc = exc
+        self.calls = []
+
+    def call(self, system_prompt, user_prompt, **kw):
+        self.calls.append(dict(kw, user=user_prompt))
+        if self.exc:
+            raise self.exc
+        import re
+        n = int(re.search(r"Generate (\d+)", user_prompt).group(1))
+        return json.dumps({"tasks": [
+            {"type": "bug-fix", "instruction": f"task {len(self.calls)}-{i}",
+             "feature_used": "defmacro", "difficulty": "advanced"}
+            for i in range(n)
+        ]})
+
+
+class TestGenerateTasksFromNode:
+    def test_unwraps_tasks_object(self):
+        tasks = generate_tasks_from_node(_macro_node(), _TaskLLM(), count=3)
+        assert len(tasks) == 3
+        assert tasks[0].difficulty == "advanced"
+
+    def test_llm_error_drops_without_canned_tasks(self):
+        from src.llm.provider import LLMError
+        assert generate_tasks_from_node(_macro_node(), _TaskLLM(LLMError("503")), count=3) == []
+
+    def test_auth_error_propagates(self):
+        from src.llm.provider import LLMAuthError
+        with pytest.raises(LLMAuthError):
+            generate_tasks_from_node(_macro_node(), _TaskLLM(LLMAuthError("401")), count=3)
+
+    def test_bad_json_drops(self):
+        class _Bad:
+            def call(self, *a, **k):
+                return "not json"
+        assert generate_tasks_from_node(_macro_node(), _Bad(), count=3) == []
+
+    def test_large_count_is_batched_and_rejects_truncation(self):
+        llm = _TaskLLM()
+        count = _MAX_TASKS_PER_CALL * 2 + 1
+        tasks = generate_tasks_from_node(_macro_node(), llm, count=count)
+        assert len(tasks) == count
+        assert len(llm.calls) == 3
+        assert all(c["reject_truncated"] is True for c in llm.calls)
+        assert all(c["require_json"] is True for c in llm.calls)
+
+    def test_failed_batch_keeps_other_batches(self):
+        from src.llm.provider import LLMError
+
+        class _Flaky(_TaskLLM):
+            def call(self, system_prompt, user_prompt, **kw):
+                if not self.calls:
+                    self.calls.append(kw)
+                    raise LLMError("503")
+                return super().call(system_prompt, user_prompt, **kw)
+
+        tasks = generate_tasks_from_node(_macro_node(), _Flaky(), count=_MAX_TASKS_PER_CALL * 2)
+        assert len(tasks) == _MAX_TASKS_PER_CALL
+
+
+class TestTaskTypeCoverage:
+    def _types(self, prompt):
+        import re
+        return set(re.findall(r'"type": "([a-z-]+)"', prompt))
+
+    def test_all_types_reachable_with_small_counts(self):
+        random.seed(0)
+        seen = set()
+        for _ in range(30):
+            seen |= self._types(_build_task_prompt(_macro_node().features, _macro_node(), count=2))
+        assert seen == set(_TASK_TEMPLATES)
+
+    def test_count_covering_all_types_uses_each(self):
+        prompt = _build_task_prompt(_macro_node().features, _macro_node(), count=len(_TASK_TEMPLATES))
+        assert self._types(prompt) == set(_TASK_TEMPLATES)
+
+
+class TestSelfContainedTasks:
+    """Tasks must not point at project files the answer can't see."""
+
+    def test_templates_reference_no_files(self):
+        for templates in _TASK_TEMPLATES.values():
+            for t in templates:
+                assert "{file}" not in t
+                assert ".clj" not in t
+
+    def test_prompt_has_no_phantom_paths(self):
+        random.seed(1)
+        for _ in range(10):
+            prompt = _build_task_prompt(_macro_node().features, _macro_node(), count=3)
+            assert "src/" not in prompt
+            assert "JSON array" not in prompt
+
+    def test_system_prompt_asks_for_tasks_object(self):
+        assert '"tasks"' in QUESTION_SYSTEM
+        assert "context_files" not in QUESTION_SYSTEM
+        assert "JSON array" not in QUESTION_SYSTEM
+        assert "self-contained" in QUESTION_SYSTEM.lower()
