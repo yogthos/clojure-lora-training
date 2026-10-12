@@ -159,3 +159,17 @@ def test_against_real_jolt():
     assert conv[2]["value"] == "=> #'user/valid-row?"
     assert conv[4]["value"] == "=> true"
     assert conv[6]["value"] == "=> false"
+
+
+@pytest.mark.parametrize("code,expected", [
+    ("(defn sq [x] (* x x))", True),
+    ("(require '[clojure.string :as str])", True),
+    ("  (def data [1 2 3])", True),
+    ("(sq 5)", False),
+    ("(defn sq [x] (* x x))\n(sq 5)", False),        # defines, then demonstrates
+    ("(def a 1) (def b 2)", True),
+    ('(println "(defn x)")', False),
+])
+def test_is_definition(code, expected):
+    from src.codeflow.synthetic.live_trace import is_definition
+    assert is_definition(code) is expected

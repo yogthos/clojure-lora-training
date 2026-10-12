@@ -287,11 +287,9 @@ def validate_example(example: dict, min_score: float = 0.4) -> ValidationResult:
 
 
 def _extract_code_blocks(text: str) -> List[str]:
-    """Clojure code in an output: every ``;; eval:`` form (multi-line forms
-    included) and every ```clojure fenced block."""
-    from ..synthetic.verify import extract_eval_blocks
-
-    blocks = [b.form for b in extract_eval_blocks(text) if b.form]
+    """Clojure code in ```clojure fenced blocks of a single-turn output.
+    (Multi-turn traces carry their code in eval tool calls.)"""
+    blocks: List[str] = []
 
     in_clj_block = False
     clj_lines: List[str] = []

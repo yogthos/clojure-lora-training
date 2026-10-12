@@ -17,10 +17,10 @@ from dataclasses import dataclass, field
 from typing import Callable, List, Optional
 
 from ...llm.provider import LLMAuthError, LLMError, LLMProvider
+from ..clj_text import top_level_forms
 from ..diffs import new_file_contents, repair_trace_diff
 from .jolt_eval import EvalResult, JoltSession, render_observation
 from .prompts import LIVE_SYSTEM
-from .verify import _is_definition
 
 EVAL_TOOL = {
     "type": "function",
@@ -53,6 +53,29 @@ def has_repetition_loop(text: str) -> bool:
     """
     own = "\n".join(l for l in text.splitlines() if not l.lstrip().startswith(";; result:"))
     return any(len(set(m.group(1))) >= 4 for m in _REPETITION_RE.finditer(own))
+
+
+_DEF_HEADS = ("def", "defn", "defn-", "defmacro", "defmulti", "defmethod", "defrecord",
+              "deftype", "defprotocol", "defonce", "require", "ns", "import", "use",
+              "in-ns", "refer")
+
+
+def is_definition(code: str) -> bool:
+    """True if every top-level form only defines or loads something.
+
+    Definitions return a var or nil, so they "succeed" trivially; the end
+    state is judged on the last eval that demonstrates something.
+    """
+    forms = top_level_forms(code)
+    if not forms:
+        return False
+    for form in forms:
+        if not form.startswith("("):
+            return False
+        head = form[1:].lstrip().split(None, 1)
+        if not head or head[0].rstrip(")") not in _DEF_HEADS:
+            return False
+    return True
 
 
 def think(reasoning: str) -> str:
@@ -196,7 +219,7 @@ def run_live_trace(
 def _ends_clean(trace: LiveTrace) -> bool:
     """The end state is the last eval that isn't a definition: it must run.
     Failures before it are the error->fix arc the data is meant to teach."""
-    checks = [s.result for s in trace.steps if not _is_definition(s.code)]
+    checks = [s.result for s in trace.steps if not is_definition(s.code)]
     return bool(checks) and checks[-1].ok
 
 
