@@ -226,6 +226,7 @@ dev = [
     { name = "gguf" },
     { name = "pytest" },
     { name = "pytest-cov" },
+    { name = "pyyaml" },
 ]
 
 [package.metadata]
@@ -251,6 +252,7 @@ dev = [
     { name = "gguf", specifier = ">=0.17" },
     { name = "pytest", specifier = ">=7.0.0" },
     { name = "pytest-cov", specifier = ">=4.0.0" },
+    { name = "pyyaml", specifier = ">=6.0" },
 ]
 
 [[package]]
