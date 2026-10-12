@@ -146,3 +146,31 @@ class TestSplitJSONL:
 
         assert count_records(train_path) == 1
         assert count_records(val_path) == 0
+
+
+class TestDedupOnInstructionAndOutput:
+    """Different solutions to one instruction are distinct examples."""
+
+    def test_deduplicate_keeps_different_outputs(self, tmp_path):
+        path = str(tmp_path / "d.jsonl")
+        write_jsonl([
+            {"instruction": "task", "output": "solution a"},
+            {"instruction": "task", "output": "solution b"},
+            {"instruction": "task", "output": "solution a"},
+        ], path)
+        assert count_records(deduplicate_jsonl(path)) == 2
+
+    def test_merge_keeps_different_outputs(self, tmp_path):
+        p1, p2 = str(tmp_path / "a.jsonl"), str(tmp_path / "b.jsonl")
+        write_jsonl([{"instruction": "task", "output": "a"}], p1)
+        write_jsonl([{"instruction": "task", "output": "b"},
+                     {"instruction": "task", "output": "a"}], p2)
+        out = str(tmp_path / "m.jsonl")
+        merge_jsonl([p1, p2], out)
+        assert count_records(out) == 2
+
+    def test_explicit_key_still_supported(self, tmp_path):
+        path = str(tmp_path / "d.jsonl")
+        write_jsonl([{"instruction": "Task", "output": "a"},
+                     {"instruction": "task", "output": "b"}], path)
+        assert count_records(deduplicate_jsonl(path, dedup_key="instruction")) == 1
