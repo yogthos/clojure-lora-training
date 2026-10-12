@@ -16,15 +16,17 @@ Usage:
 """
 
 import argparse
+import json
 import os
 import sys
+from dataclasses import asdict
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.shared import load_jsonl
 from src.codeflow.synthetic.jolt_eval import jolt_available
-from src.codeflow.synthetic.prompt_mining import mine_prompts
+from src.codeflow.synthetic.prompt_mining import MinedPrompt, mine_prompts
 from src.codeflow.synthetic.workflow_gen import generate_workflows_concurrent
 
 
@@ -47,6 +49,10 @@ def parse_args() -> argparse.Namespace:
                    help="Concurrent worker threads (the work is I/O-bound on the "
                         "LLM API and jolt). Default 8.")
     p.add_argument("--seed", type=int, default=42, help="Shuffle seed for source records")
+    p.add_argument("--fresh", action="store_true",
+                   help="Discard previous output, prompt cache and progress, and start over "
+                        "(by default a rerun resumes: cached prompts are reused, attempted "
+                        "prompts are skipped and new traces are appended)")
     return p.parse_args()
 
 
@@ -84,6 +90,16 @@ def main() -> int:
               "--no-verify-execution to keep fabricated results.", file=sys.stderr)
         return 1
 
+    out = Path(args.output)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    # Sidecars that make a rerun resume instead of redoing (and re-paying for)
+    # finished work: the mined prompts, and every prompt already attempted.
+    prompts_path = out.with_name(out.name + ".prompts")
+    attempted_path = out.with_name(out.name + ".attempted")
+    if args.fresh:
+        for p in (out, prompts_path, attempted_path):
+            p.unlink(missing_ok=True)
+
     records = []
     for path in args.git_data:
         records.extend(load_jsonl(path))
@@ -91,20 +107,36 @@ def main() -> int:
     print(f"Loaded {len(records)} source records from {len(args.git_data)} file(s)",
           file=sys.stderr)
 
-    # Backtranslate prompts (oversample: verification drops some downstream).
-    prompts = mine_prompts(records, llm, max_prompts=args.target)
-    print(f"Mined {len(prompts)} user-style prompts", file=sys.stderr)
+    prompts = [MinedPrompt(**d) for d in load_jsonl(prompts_path)] if prompts_path.exists() else []
+    if len(prompts) < args.target:
+        # Backtranslate prompts (oversample: verification drops some downstream).
+        used = {p.source_instruction for p in prompts}
+        fresh = [r for r in records if (r.get("instruction") or "").strip() not in used]
+        new = mine_prompts(fresh, llm, max_prompts=args.target - len(prompts))
+        with open(prompts_path, "a") as pf:
+            for p in new:
+                pf.write(json.dumps(asdict(p), ensure_ascii=False) + "\n")
+        prompts += new
+        print(f"Mined {len(new)} user-style prompts ({len(prompts)} total)", file=sys.stderr)
+    prompts = prompts[:args.target]
 
-    out = Path(args.output)
-    out.parent.mkdir(parents=True, exist_ok=True)
+    attempted = set(attempted_path.read_text().splitlines()) if attempted_path.exists() else set()
+    todo = [p for p in prompts if p.source_instruction not in attempted]
+    if len(todo) < len(prompts):
+        print(f"Resuming: {len(prompts) - len(todo)} prompts already attempted", file=sys.stderr)
 
     # Stream each verified trace to disk as it completes, so a long run is
     # observable and survives interruption with partial results intact.
-    f = open(out, "w")
+    f = open(out, "a")
+    af = open(attempted_path, "a")
 
     def on_result(r):
         f.write(r.to_jsonl() + "\n")
         f.flush()
+
+    def on_attempt(prompt, _result):
+        af.write(prompt.source_instruction.replace("\n", " ") + "\n")
+        af.flush()
 
     def on_progress(done, total, kept):
         if done % 10 == 0 or done == total:
@@ -114,20 +146,22 @@ def main() -> int:
     print(f"Generating with {args.workers} workers...", file=sys.stderr)
     try:
         results = generate_workflows_concurrent(
-            prompts, llm,
+            todo, llm,
             max_workers=args.workers,
             verify=verify,
             min_pass_rate=args.min_pass_rate,
             on_result=on_result,
             on_progress=on_progress,
+            on_attempt=on_attempt,
         )
     finally:
         f.close()
+        af.close()
 
     kept = len(results)
     print(f"Generated {kept} verified workflows "
-          f"({len(prompts) - kept} dropped)", file=sys.stderr)
-    print(f"Output: {out} ({kept} records)", file=sys.stderr)
+          f"({len(todo) - kept} dropped)", file=sys.stderr)
+    print(f"Output: {out}", file=sys.stderr)
     return 0
 
 

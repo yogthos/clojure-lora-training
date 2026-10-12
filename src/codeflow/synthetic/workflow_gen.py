@@ -218,6 +218,7 @@ def generate_workflows_concurrent(
     min_pass_rate: float = 0.6,
     on_result: Optional[Callable[[WorkflowResult], None]] = None,
     on_progress: Optional[Callable[[int, int, int], None]] = None,
+    on_attempt: Optional[Callable[[MinedPrompt, Optional[WorkflowResult]], None]] = None,
 ) -> List[WorkflowResult]:
     """Generate workflow traces concurrently across prompts.
 
@@ -226,17 +227,20 @@ def generate_workflows_concurrent(
     thread for each kept trace as it completes — use it to stream results to
     disk incrementally. ``on_progress(done, total, kept)`` fires once per
     completed prompt for progress reporting. A worker that raises is treated as
-    a dropped sample (None), never aborting the run.
+    a dropped sample (None), never aborting the run — except LLMAuthError,
+    which stops it. ``on_attempt(prompt, result_or_None)`` fires once per
+    finished prompt, kept or dropped, after ``on_result`` — use it to record
+    progress for resuming.
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     results: List[WorkflowResult] = []
     total = len(prompts)
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = [
-            pool.submit(generate_one, p, llm, verify, jolt_path, min_pass_rate)
+        futures = {
+            pool.submit(generate_one, p, llm, verify, jolt_path, min_pass_rate): p
             for p in prompts
-        ]
+        }
         for done, fut in enumerate(as_completed(futures), 1):
             try:
                 r = fut.result()
@@ -250,6 +254,8 @@ def generate_workflows_concurrent(
                 results.append(r)
                 if on_result is not None:
                     on_result(r)
+            if on_attempt is not None:
+                on_attempt(futures[fut], r)
             if on_progress is not None:
                 on_progress(done, total, len(results))
     return results

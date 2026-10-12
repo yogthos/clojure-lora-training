@@ -17,7 +17,6 @@ producing code blindly.
 """
 
 import json
-
 from dataclasses import dataclass
 from typing import List, Optional
 
