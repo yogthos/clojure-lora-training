@@ -4,11 +4,16 @@
 # (two objectives: git transitions and REPL workflow traces) and the
 # overfitting findings from the text-style-transfer training docs.
 #
-# Environment (Qwen3.6 is the qwen3_5 architecture: VL wrapper, GatedDeltaNet
+# Environment (Qwen3.8-27B is the qwen3_5 architecture: VL wrapper, GatedDeltaNet
 # linear attention on 3 of every 4 layers, MTP head):
-#   - LLaMA-Factory 0.9.5 (has the qwen3_6 template) with transformers
-#     >=5.2.0,<5.6.0; or LLaMA-Factory main with transformers >=5.2.0,<=5.8.0,
-#     !=5.6.0. qwen3_5 first ships in transformers 5.2.0.
+#   - LLaMA-Factory from git main: the qwen3_8 template (PR #10749) isn't in
+#     0.9.5. main pins transformers <=5.8.0 (!=5.6.0) and peft <=0.18.1;
+#     qwen3_5 first ships in transformers 5.2.0. Verified with transformers
+#     5.8.0 + peft 0.18.1 by tests/unit/test_training_parity.py.
+#   - qwen3_8 adds Qwen's reasoning-effort line to the system prompt
+#     (reasoning_effort, default xhigh, as Qwen's template) and keeps every
+#     turn's <think> (preserve_thinking), so each eval step's reasoning is
+#     trained.
 #   - flash-linear-attention and causal-conv1d: without them transformers
 #     falls back to the torch GatedDeltaNet path, which is far slower and
 #     needs much more memory.
@@ -17,7 +22,7 @@
 # Run:  llamafactory-cli train configs/codeflow_lora_qwen.yaml
 
 ### model
-model_name_or_path: Qwen/Qwen3.6-27B
+model_name_or_path: Qwen/Qwen3.8-27B
 # No trust_remote_code: qwen3_5 is native in transformers. transformers drops
 # the mtp.* weights on load (they're re-attached at export, bead 0sv.18).
 
@@ -47,7 +52,7 @@ neftune_noise_alpha: 5.0
 ### dataset
 dataset: codeflow_train       # registered in data/dataset_info.json (below)
 eval_dataset: codeflow_val    # our own held-out split (grouped by repo, leakage-checked)
-template: qwen3_6
+template: qwen3_8
 # Thinking mode stays on, and is set explicitly because it changes what is
 # trained: a response with no <think> block gets an EMPTY one prepended and
 # included in the loss, teaching the model to skip reasoning. Every assistant

@@ -15,7 +15,7 @@ def provider_from_env(max_tokens: int = 8192, temperature: float = 0.5) -> LLMPr
         return DeepSeekProvider(LLMProviderConfig(
             api_key=os.environ.get("DEEPSEEK_API_KEY", ""),
             base_url=os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
-            model=os.environ.get("DEEPSEEK_MODEL", "deepseek-chat"),
+            model=os.environ.get("DEEPSEEK_MODEL", "deepseek-flash"),
             max_tokens=max_tokens, temperature=temperature, timeout=120,
         ))
     from .ollama import OllamaProvider

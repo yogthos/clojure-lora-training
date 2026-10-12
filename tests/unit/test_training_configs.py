@@ -1,6 +1,6 @@
 """Invariants of the LLaMA-Factory training configs.
 
-Each check is a way a config silently trains the wrong thing on Qwen3.6
+Each check is a way a config silently trains the wrong thing on Qwen3.8
 (qwen3_5 architecture) with LLaMA-Factory.
 """
 
@@ -38,7 +38,8 @@ def test_thinking_mode_is_explicit(config):
     # With thinking on and no <think> in a response, LLaMA-Factory trains an
     # empty think block into every answer.
     assert config.get("enable_thinking") is True
-    assert config["template"] == "qwen3_6"
+    assert config["template"] == "qwen3_8"
+    assert config["model_name_or_path"] == "Qwen/Qwen3.8-27B"
 
 
 def test_early_stopping_is_a_real_argument(config):
@@ -65,11 +66,3 @@ def test_keys_are_llamafactory_arguments(config):
                                hparams.GeneratingArguments])
     known = {a.dest for a in parser._actions}
     assert set(config) - known == set()
-
-
-def test_split_renders_with_the_trained_model(config):
-    import sys
-    from unittest.mock import patch
-    from src.codeflow.cli.split_codeflow_dataset import parse_args
-    with patch.object(sys, "argv", ["s", "-i", "a", "--train-out", "t", "--val-out", "v"]):
-        assert parse_args().tokenizer == config["model_name_or_path"]

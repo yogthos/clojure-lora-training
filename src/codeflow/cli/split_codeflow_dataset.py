@@ -20,7 +20,6 @@ from pathlib import Path
 
 from src.shared import load_jsonl, write_jsonl
 from src.codeflow.assembly.sharegpt import to_sharegpt
-from src.codeflow.assembly.token_length import load_tokenizer
 from src.codeflow.assembly.splitter import (
     stratified_split,
     assert_no_leakage,
@@ -40,9 +39,6 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--val-frac", type=float, default=0.05,
                    help="Fraction held out for validation (default 0.05)")
     p.add_argument("--seed", type=int, default=42)
-    p.add_argument("--tokenizer", default="Qwen/Qwen3.6-27B", metavar="NAME",
-                   help="Tokenizer of the model being trained; its chat template renders "
-                        "the tools block of multi-turn records (default: Qwen/Qwen3.6-27B)")
     return p.parse_args()
 
 
@@ -58,9 +54,8 @@ def main() -> int:
 
     # The split needs the flat fields (repo, instruction); the files LLaMA-
     # Factory reads are sharegpt (configs/dataset_info.codeflow.json).
-    tokenizer = load_tokenizer(args.tokenizer) if any(r.get("tools") for r in records) else None
-    write_jsonl([to_sharegpt(r, tokenizer) for r in train], args.train_out)
-    write_jsonl([to_sharegpt(r, tokenizer) for r in val], args.val_out)
+    write_jsonl([to_sharegpt(r) for r in train], args.train_out)
+    write_jsonl([to_sharegpt(r) for r in val], args.val_out)
 
     print(f"Total {len(records)} -> train {len(train)} / val {len(val)} "
           f"(val_frac={args.val_frac}, no leakage)")

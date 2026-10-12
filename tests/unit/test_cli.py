@@ -83,7 +83,7 @@ class TestParseArgs:
     def test_token_filter_defaults_to_training_config(self):
         with patch("sys.argv", ["a", "--git-dir", "g", "--synth-dir", "s", "--output", "o"]):
             args = parse_args()
-        assert args.tokenizer == "Qwen/Qwen3.6-27B"
+        assert args.tokenizer == "Qwen/Qwen3.8-27B"
         assert args.cutoff_len == 16384
 
     def test_flags(self):
@@ -223,4 +223,4 @@ def test_records_over_cutoff_are_dropped(tmp_path, char_tokenizer):
         assert main() == 0
     recs = [json.loads(l) for l in out.read_text().splitlines()]
     assert [r["instruction"] for r in recs] == ["change the default value of a"]
-    assert char_tokenizer == ["Qwen/Qwen3.6-27B"]
+    assert char_tokenizer == ["Qwen/Qwen3.8-27B"]

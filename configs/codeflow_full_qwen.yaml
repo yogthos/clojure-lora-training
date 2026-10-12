@@ -20,7 +20,7 @@
 ### model
 # Environment and architecture notes: see codeflow_lora_qwen.yaml (transformers
 # >=5.2.0 within LLaMA-Factory's cap, flash-linear-attention, causal-conv1d).
-model_name_or_path: Qwen/Qwen3.6-27B
+model_name_or_path: Qwen/Qwen3.8-27B
 
 ### method
 stage: sft
@@ -34,7 +34,7 @@ deepspeed: examples/deepspeed/ds_z3_config.json
 ### dataset
 dataset: codeflow_train
 eval_dataset: codeflow_val
-template: qwen3_6
+template: qwen3_8
 enable_thinking: true         # explicit: responses without <think> would train an
                               #   empty think block (see codeflow_lora_qwen.yaml)
 train_on_prompt: false

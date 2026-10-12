@@ -260,3 +260,12 @@ class TestCachedInputTokens:
         assert usage_line({"total_calls": 3, "total_input_tokens": 12000,
                            "total_cached_input_tokens": 9000, "total_output_tokens": 1500}) == \
             "LLM usage: 3 calls, 12,000 input tokens (9,000 cached), 1,500 output tokens"
+
+
+def test_deepseek_default_model_is_pinned(monkeypatch):
+    # deepseek-chat became an alias the API resolves to whatever is current;
+    # name the model the data was generated with.
+    from src.llm.env import provider_from_env
+    monkeypatch.setenv("LLM_PROVIDER", "deepseek")
+    monkeypatch.delenv("DEEPSEEK_MODEL", raising=False)
+    assert provider_from_env().config.model == "deepseek-flash"

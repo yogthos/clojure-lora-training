@@ -1,8 +1,10 @@
 """What LLaMA-Factory trains on must be what Qwen's chat template serves.
 
 Runs only where llamafactory is installed (it isn't a project dependency):
-    uv run --with "llamafactory==0.9.5" --with "transformers>=5.2.0,<5.6.0" \
+    uv run --with "llamafactory @ git+https://github.com/hiyouga/LlamaFactory" \
+        --with "transformers==5.8.0" --with "peft==0.18.1" \
         pytest tests/unit/test_training_parity.py
+(the qwen3_8 template is on main; 0.9.5 doesn't have it)
 """
 
 import json
@@ -33,7 +35,7 @@ def tok_and_template():
 
 
 def _render(tok, template, record):
-    sg = to_sharegpt(record, tok)
+    sg = to_sharegpt(record)
     msgs = [{"role": _ROLE[t["from"]], "content": t["value"]} for t in sg["conversations"]]
     pairs = template.encode_multiturn(tok, msgs, sg["system"], sg["tools"])
     trained = [tok.decode(r) for _, r in pairs]

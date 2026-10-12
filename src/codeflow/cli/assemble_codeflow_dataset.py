@@ -71,10 +71,10 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--tokenizer",
-        default="Qwen/Qwen3.6-27B",
+        default="Qwen/Qwen3.8-27B",
         metavar="NAME",
         help="Tokenizer of the model being trained, for the length filter "
-             "(default: Qwen/Qwen3.6-27B, as in configs/codeflow_lora_qwen.yaml)",
+             "(default: Qwen/Qwen3.8-27B, as in configs/codeflow_lora_qwen.yaml)",
     )
     parser.add_argument(
         "--cutoff-len",
