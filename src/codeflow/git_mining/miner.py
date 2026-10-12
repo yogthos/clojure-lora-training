@@ -20,6 +20,10 @@ from .commit_filter import (
     is_clojure_file,
 )
 from .diff_parser import parse_diff
+from .context import (HistoryEntry, file_history, format_history, format_related,
+                      related_forms)
+from .forms import top_level_form_spans as _top_level_form_spans
+from .gitcmd import _DIFF_FLAGS, _GIT, get_file_content
 
 from ...shared import _TRANSITION_SYSTEM_PROMPT
 
@@ -29,13 +33,9 @@ _EMPTY_TREE_SHA = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
 _CLOJURE_PATHSPECS = ["*.clj", "*.cljs", "*.cljc", "*.edn"]
 
-# Pin the output format against user config: unquoted non-ASCII paths, no
-# color, standard a/ b/ prefixes (diff.noprefix / diff.mnemonicPrefix would
-# break header parsing), renames detected regardless of diff.renames.
-_GIT = ["git", "-c", "core.quotePath=false", "-c", "color.ui=never"]
-_DIFF_FLAGS = ["--no-color", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/",
-               "--find-renames", "--unified=3"]
-
+# Changed files are shown whole, smallest first, while they fit in this many
+# characters (~4.5k tokens); the rest show only the changed forms.
+WHOLE_FILE_BUDGET = 16000
 
 @dataclass
 class MinedExample:
@@ -46,6 +46,8 @@ class MinedExample:
     after: Dict[str, str]  # filename -> content
     diff: str
     changed_files: List[str] = field(default_factory=list)
+    history: List[HistoryEntry] = field(default_factory=list)
+    related: Dict[str, str] = field(default_factory=dict)   # path -> forms using the change
 
     def to_dict(self) -> dict:
         """Convert to LLaMA-Factory compatible format.
@@ -57,11 +59,18 @@ class MinedExample:
         return {
             "system": _TRANSITION_SYSTEM_PROMPT,
             "instruction": self.instruction,
-            "input": _format_changed_regions(self.before, self.diff),
+            "input": self.input_text(),
             "output": self.diff,
             # Not a training field: groups records by repo for the train/val split.
             "repo": self.repo_name,
         }
+
+    def input_text(self) -> str:
+        """Recent history, then the code being changed, then the code that
+        uses it."""
+        code = _format_changed_regions(self.before, self.diff, whole_budget=WHOLE_FILE_BUDGET)
+        parts = [format_history(self.history), code, format_related(self.related)]
+        return "\n\n".join(p for p in parts if p)
 
     def to_jsonl(self) -> str:
         """Serialize as a single JSONL line."""
@@ -76,70 +85,11 @@ def _format_file_tree(files: Dict[str, str]) -> str:
     return "\n\n".join(parts)
 
 
-def _top_level_form_spans(content: str) -> List[tuple[int, int, str]]:
-    """Top-level forms in Clojure source as (start_line, end_line, text).
-
-    Lines are 1-indexed and inclusive. A form begins where bracket depth goes
-    0 -> 1 and ends where it returns to 0, tracking strings, line comments, and
-    character literals so delimiters inside them don't shift the depth.
-    """
-    spans: List[tuple[int, int]] = []
-    depth = 0
-    in_string = False
-    escaped = False
-    in_line_comment = False
-    line_no = 1
-    form_start: Optional[int] = None
-
-    i, n = 0, len(content)
-    while i < n:
-        ch = content[i]
-        if ch == "\n":
-            in_line_comment = False
-            line_no += 1
-            i += 1
-            continue
-        if in_line_comment:
-            i += 1
-            continue
-        if in_string:
-            if escaped:
-                escaped = False
-            elif ch == "\\":
-                escaped = True
-            elif ch == '"':
-                in_string = False
-            i += 1
-            continue
-        if ch == ";":
-            in_line_comment = True
-        elif ch == '"':
-            in_string = True
-        elif ch == "\\":  # character literal, e.g. \( — skip the next char
-            i += 2
-            continue
-        elif ch in "([{":
-            if depth == 0:
-                form_start = line_no
-            depth += 1
-        elif ch in ")]}":
-            depth -= 1
-            if depth <= 0:
-                depth = 0
-                if form_start is not None:
-                    spans.append((form_start, line_no))
-                    form_start = None
-        i += 1
-
-    if form_start is not None:  # unterminated form
-        spans.append((form_start, line_no))
-
-    lines = content.split("\n")
-    return [(s, e, "\n".join(lines[s - 1:e])) for (s, e) in spans]
-
-
-def _format_changed_regions(before: Dict[str, str], diff: str) -> str:
+def _format_changed_regions(before: Dict[str, str], diff: str, whole_budget: int = 0) -> str:
     """Render the before-state showing only the changed top-level forms.
+
+    Files are shown whole instead, smallest first, while their total size
+    stays within ``whole_budget`` characters.
 
     For each file, keep the forms whose lines overlap a diff hunk's old range,
     plus the ``ns`` form for context. Non-adjacent kept forms are separated by a
@@ -153,9 +103,19 @@ def _format_changed_regions(before: Dict[str, str], diff: str) -> str:
             count = h.old_count if h.old_count else 1
             rs.append((h.old_start, h.old_start + count - 1))
 
+    whole, used = set(), 0
+    for path in sorted(before, key=lambda p: len(before[p])):
+        if used + len(before[path]) > whole_budget:
+            break
+        whole.add(path)
+        used += len(before[path])
+
     parts = []
     for path in sorted(before):
         content = before[path]
+        if path in whole:
+            parts.append(f"### {path}\n```clojure\n{content.rstrip()}\n```")
+            continue
         ranges = ranges_by_path.get(path)
         spans = _top_level_form_spans(content) if ranges else []
         kept = set()
@@ -267,15 +227,6 @@ def get_commit_diff(repo_path: str, commit_hash: str) -> str:
     if result.returncode != 0:
         return ""
     # Don't strip: trailing ' ' lines are blank context the hunk counts include.
-    return result.stdout
-
-
-def get_file_content(repo_path: str, commit_hash: str, filepath: str) -> str:
-    """Get file content at a specific commit."""
-    cmd = [*_GIT, "-C", repo_path, "show", f"{commit_hash}:{filepath}"]
-    result = subprocess.run(cmd, capture_output=True, text=True, errors="replace")
-    if result.returncode != 0:
-        return ""
     return result.stdout
 
 
@@ -514,6 +465,13 @@ def mine_repository(
         if not before_state and not after_state:
             continue
 
+        history, related = [], {}
+        if base_ref != _EMPTY_TREE_SHA:
+            old_paths = [df.old_path if df.change_type == "renamed" and df.old_path else df.path
+                         for df in parsed if df.change_type != "added"]
+            history = file_history(repo_path, base_ref, old_paths)
+            related = related_forms(repo_path, base_ref, before_state, diff_text)
+
         # Step 3: endpoint quality — meaningful combined instruction.
         instruction = _synthesize_instruction([c.message for c in arc])
         if not instruction:
@@ -526,6 +484,8 @@ def mine_repository(
             after=after_state,
             diff=diff_text,
             changed_files=[df.path for df in parsed],
+            history=history,
+            related=related,
         ))
 
     return examples

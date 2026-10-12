@@ -369,16 +369,18 @@ class TestBeforeStateTrimming:
         assert len(trimmed) < len(whole)
 
     def test_to_dict_input_is_trimmed(self):
+        # Files over the whole-file budget show only the changed forms.
+        before = self._BEFORE + "\n" + "".join(f"(defn pad-{i} [] {i})\n" for i in range(1000))
         ex = MinedExample(
             repo_name="r",
             instruction="bump f-2",
-            before={"core.clj": self._BEFORE},
-            after={"core.clj": self._BEFORE.replace("[] 2)", "[] 22)")},
+            before={"core.clj": before},
+            after={"core.clj": before.replace("[] 2)", "[] 22)")},
             diff=self._DIFF,
             changed_files=["core.clj"],
         )
         d = ex.to_dict()
-        assert "f-2" in d["input"] and "f-1" not in d["input"]
+        assert "f-2" in d["input"] and "f-1" not in d["input"] and "pad-500" not in d["input"]
 
 
 class TestFormatting:
