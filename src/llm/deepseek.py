@@ -99,6 +99,9 @@ class DeepSeekProvider(LLMProvider):
         if require_json:
             payload["response_format"] = {"type": "json_object"}
 
+        if self.config.thinking is not None:
+            payload["thinking"] = {"type": "enabled" if self.config.thinking else "disabled"}
+
         if logit_bias:
             payload["logit_bias"] = logit_bias
 

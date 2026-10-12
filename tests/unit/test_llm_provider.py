@@ -269,3 +269,17 @@ def test_deepseek_default_model_is_pinned(monkeypatch):
     monkeypatch.setenv("LLM_PROVIDER", "deepseek")
     monkeypatch.delenv("DEEPSEEK_MODEL", raising=False)
     assert provider_from_env().config.model == "deepseek-flash"
+
+
+def test_deepseek_thinking_is_off_by_default(monkeypatch):
+    # deepseek-flash thinks unless told not to: the hidden reasoning bills as
+    # output and can use up max_tokens, leaving the reply empty. Our prompts
+    # ask for reasoning in the JSON instead.
+    from src.llm.env import provider_from_env
+    monkeypatch.setenv("LLM_PROVIDER", "deepseek")
+    resp = MagicMock(status_code=200)
+    resp.json.return_value = {"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+                              "usage": {}}
+    with patch("src.llm.deepseek.requests.post", return_value=resp) as post:
+        provider_from_env().call("S", "U")
+    assert post.call_args.kwargs["json"]["thinking"] == {"type": "disabled"}

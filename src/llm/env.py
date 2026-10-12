@@ -1,7 +1,8 @@
 """LLM provider chosen by environment variables, for the pipeline CLIs.
 
 LLM_PROVIDER=deepseek uses DEEPSEEK_API_KEY / DEEPSEEK_BASE_URL /
-DEEPSEEK_MODEL; anything else uses Ollama (OLLAMA_BASE_URL / OLLAMA_MODEL).
+DEEPSEEK_MODEL, with its reasoning mode off unless DEEPSEEK_THINKING=1;
+anything else uses Ollama (OLLAMA_BASE_URL / OLLAMA_MODEL).
 """
 
 import os
@@ -17,6 +18,9 @@ def provider_from_env(max_tokens: int = 8192, temperature: float = 0.5) -> LLMPr
             base_url=os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
             model=os.environ.get("DEEPSEEK_MODEL", "deepseek-flash"),
             max_tokens=max_tokens, temperature=temperature, timeout=120,
+            # deepseek-flash thinks by default; our prompts ask for reasoning
+            # in the reply itself.
+            thinking=os.environ.get("DEEPSEEK_THINKING") == "1",
         ))
     from .ollama import OllamaProvider
     return OllamaProvider(LLMProviderConfig(

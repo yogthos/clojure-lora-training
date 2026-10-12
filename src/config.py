@@ -21,6 +21,7 @@ class LLMProviderConfig:
     max_tokens: int = 4096
     temperature: float = 0.7
     timeout: int = 120
+    thinking: Optional[bool] = None   # provider-side reasoning mode; None = API default
 
 
 @dataclass
