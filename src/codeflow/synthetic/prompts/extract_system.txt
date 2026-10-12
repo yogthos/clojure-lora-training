@@ -15,7 +15,8 @@ For each code file, identify:
 11. **Namespace organization** (:require, :import, :use patterns)
 12. **REPL-driven patterns** (comment blocks with test forms, rich comment conventions)
 
-Output as a JSON array of feature objects, each with:
+Output a JSON object with a "features" key holding an array of feature
+objects, each with:
 - "feature_type": one of the categories above (lowercase, hyphen-separated)
 - "name": the specific name (function/var name, or descriptive label)
 - "description": one-line summary of what it does
@@ -23,5 +24,9 @@ Output as a JSON array of feature objects, each with:
 - "line_hint": approximate line number (or 0 if unclear)
 - "complexity": "simple" | "moderate" | "complex"
 
+Example: {"features": [{"feature_type": "macros", "name": "with-retry",
+"description": "...", "file_path": "src/app/util.clj", "line_hint": 12,
+"complexity": "moderate"}]}
+
 Only report features that actually exist in the code. Do not fabricate.
-Output ONLY valid JSON array, no markdown fences, no explanatory text.
+Output ONLY the JSON object, no markdown fences, no explanatory text.

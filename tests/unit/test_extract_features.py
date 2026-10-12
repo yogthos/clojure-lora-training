@@ -9,6 +9,7 @@ from src.codeflow.synthetic.extract_features import (
     _read_file_safe,
     _parse_features,
     collect_clojure_files,
+    extract_features_from_files,
 )
 
 
@@ -137,3 +138,70 @@ class TestCollectClojureFiles:
     def test_empty_dir(self, tmp_path):
         files = collect_clojure_files(str(tmp_path))
         assert files == []
+
+
+class TestParseFeaturesObjectReply:
+    """require_json can only return an object, so features arrive wrapped."""
+
+    def test_unwraps_features_key_in_string(self):
+        result = json.dumps({"features": [
+            {"feature_type": "macros", "name": "defmacro", "description": "d"},
+            {"feature_type": "atoms", "name": "atom", "description": "d"},
+        ]})
+        features = _parse_features(result, Path("/tmp"))
+        assert [f.name for f in features] == ["defmacro", "atom"]
+
+    def test_empty_wrapper_yields_nothing(self):
+        assert _parse_features(json.dumps({"features": []}), Path("/tmp")) == []
+
+    def test_nameless_items_dropped(self):
+        result = json.dumps({"features": [{"description": "no name"}]})
+        assert _parse_features(result, Path("/tmp")) == []
+
+
+class _RaisingLLM:
+    def __init__(self, exc):
+        self.exc = exc
+
+    def call(self, *a, **k):
+        raise self.exc
+
+
+class TestExtractLLMFailures:
+    def _files(self, tmp_path):
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "core.clj").write_text("(ns core)\n(defmacro m [] nil)\n")
+        return [src / "core.clj"]
+
+    def test_llm_error_drops_batch(self, tmp_path):
+        from src.llm.provider import LLMError
+        out = extract_features_from_files(
+            self._files(tmp_path), str(tmp_path), _RaisingLLM(LLMError("503")))
+        assert out == []
+
+    def test_auth_error_propagates(self, tmp_path):
+        from src.llm.provider import LLMAuthError
+        with pytest.raises(LLMAuthError):
+            extract_features_from_files(
+                self._files(tmp_path), str(tmp_path), _RaisingLLM(LLMAuthError("401")))
+
+    def test_programming_error_not_swallowed(self, tmp_path):
+        with pytest.raises(AttributeError):
+            extract_features_from_files(
+                self._files(tmp_path), str(tmp_path), _RaisingLLM(AttributeError("bug")))
+
+    def test_requests_untruncated_object(self, tmp_path):
+        seen = {}
+
+        class _LLM:
+            def call(self, system_prompt, user_prompt, **kw):
+                seen.update(kw, system=system_prompt)
+                return json.dumps({"features": [
+                    {"feature_type": "macros", "name": "m", "description": "d"}]})
+
+        out = extract_features_from_files(self._files(tmp_path), str(tmp_path), _LLM())
+        assert [f.name for f in out] == ["m"]
+        assert seen["reject_truncated"] is True
+        assert '"features"' in seen["system"]
+        assert "JSON array" not in seen["system"]
