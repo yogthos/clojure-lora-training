@@ -43,7 +43,24 @@ from collections import Counter
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.codeflow.git_mining.miner import mine_repository, MinedExample
-from src.codeflow.git_mining.pattern_classifier import classify_diff
+from src.codeflow.git_mining.pattern_classifier import DiffClassification, classify_diff
+
+# --pattern choice -> DiffClassification field.
+PATTERN_ATTRS = {
+    "pure-refactor": "is_pure_refactor",
+    "state-machine": "is_state_machine",
+    "side-effect-isolation": "is_side_effect_isolation",
+    "macro": "is_macro_change",
+    "protocol": "is_protocol_change",
+    "spec": "is_spec_change",
+    "async": "is_async_change",
+    "multimethod": "is_multimethod_change",
+}
+
+
+def matches_patterns(c: DiffClassification, patterns: List[str]) -> bool:
+    """True if the classification has any of the requested patterns."""
+    return any(getattr(c, PATTERN_ATTRS[p]) for p in patterns)
 
 
 def parse_args() -> argparse.Namespace:
@@ -84,10 +101,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--pattern", type=str, action="append", dest="patterns",
-        choices=[
-            "pure-refactor", "state-machine", "side-effect-isolation",
-            "macro", "protocol", "spec", "async", "multimethod",
-        ],
+        choices=list(PATTERN_ATTRS),
         help="Only include examples matching these Clojure patterns",
     )
     parser.add_argument(
@@ -120,6 +134,16 @@ def resolve_repos(args: argparse.Namespace) -> List[str]:
     return repos
 
 
+def clone_target(repo: str, clone_dir: str) -> Path:
+    """Clone directory for a repo, ``owner__name`` so same-named repos don't collide."""
+    path = repo.rstrip("/")
+    if path.endswith(".git"):
+        path = path[:-4]
+    parts = [p for p in path.replace(":", "/").split("/") if p]
+    name = "__".join(parts[-2:]) if len(parts) >= 2 else parts[-1]
+    return Path(clone_dir) / name
+
+
 def clone_if_needed(repo: str, clone_dir: str, depth: int = 0) -> Optional[str]:
     """Clone a remote repo if needed, return local path or None.
 
@@ -137,8 +161,7 @@ def clone_if_needed(repo: str, clone_dir: str, depth: int = 0) -> Optional[str]:
     else:
         url = repo
 
-    name = repo.split("/")[-1].replace(".git", "")
-    target = Path(clone_dir) / name
+    target = clone_target(repo, clone_dir)
 
     if target.exists():
         return str(target)
@@ -197,14 +220,10 @@ def main():
 
         # Apply pattern filter if requested
         if args.patterns:
-            filtered = []
-            for ex in examples:
-                classification = classify_diff(ex.diff, ex.changed_files)
-                for p in args.patterns:
-                    attr = f"is_{p.replace('-', '_')}"
-                    if getattr(classification, attr, False):
-                        filtered.append(ex)
-                        break
+            filtered = [
+                ex for ex in examples
+                if matches_patterns(classify_diff(ex.diff, ex.changed_files), args.patterns)
+            ]
             stats["filtered_out"] += len(examples) - len(filtered)
             examples = filtered
 

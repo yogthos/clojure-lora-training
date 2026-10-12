@@ -29,6 +29,13 @@ _EMPTY_TREE_SHA = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
 _CLOJURE_PATHSPECS = ["*.clj", "*.cljs", "*.cljc", "*.edn"]
 
+# Pin the output format against user config: unquoted non-ASCII paths, no
+# color, standard a/ b/ prefixes (diff.noprefix / diff.mnemonicPrefix would
+# break header parsing), renames detected regardless of diff.renames.
+_GIT = ["git", "-c", "core.quotePath=false", "-c", "color.ui=never"]
+_DIFF_FLAGS = ["--no-color", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/",
+               "--find-renames", "--unified=3"]
+
 
 @dataclass
 class MinedExample:
@@ -125,7 +132,7 @@ def _top_level_form_spans(content: str) -> List[tuple[int, int, str]]:
     if form_start is not None:  # unterminated form
         spans.append((form_start, line_no))
 
-    lines = content.splitlines()
+    lines = content.split("\n")
     return [(s, e, "\n".join(lines[s - 1:e])) for (s, e) in spans]
 
 
@@ -148,21 +155,30 @@ def _format_changed_regions(before: Dict[str, str], diff: str) -> str:
     for path in sorted(before):
         content = before[path]
         ranges = ranges_by_path.get(path)
-        if ranges:
-            kept = [
-                (s, e, text) for (s, e, text) in _top_level_form_spans(content)
-                if text.lstrip().startswith("(ns ")
-                or any(s <= re and rs <= e for (rs, re) in ranges)
-            ]
-        else:
-            kept = []
+        spans = _top_level_form_spans(content) if ranges else []
+        kept = set()
+        for (rs, re_) in ranges or []:
+            hit = [sp for sp in spans if sp[0] <= re_ and rs <= sp[1]]
+            if not hit:
+                # The hunk sits in a gap between forms (e.g. inserting a new
+                # form): show the forms on either side as its anchor.
+                before_gap = [sp for sp in spans if sp[1] < rs]
+                after_gap = [sp for sp in spans if sp[0] > re_]
+                hit = before_gap[-1:] + after_gap[:1]
+            kept.update(hit)
+        kept.update(sp for sp in spans if sp[2].lstrip().startswith("(ns "))
         if not kept:
             body = content  # fallback: no ranges matched or unparseable
         else:
+            lines = content.split("\n")
             chunks, prev_end = [], None
             for (s, e, text) in sorted(kept):
-                if prev_end is not None and s > prev_end + 1:
-                    chunks.append(";; ...")
+                if prev_end is not None:
+                    gap = lines[prev_end:s - 1]
+                    if any(l.strip() for l in gap):
+                        chunks.append(";; ...")  # something was left out
+                    else:
+                        chunks.extend(gap)  # just blank lines: keep spacing
                 chunks.append(text)
                 prev_end = e
             body = "\n".join(chunks)
@@ -180,12 +196,13 @@ def get_commit_list(
     max_count=None walks the full history (needed for lifecycle windowing).
     """
     cmd = [
-        "git", "-C", repo_path, "log",
+        *_GIT, "-C", repo_path, "log",
+        "--first-parent",  # mainline only: side-branch work arrives via its merge
         "--pretty=format:%H%x00%P%x00%aI%x00%s",
         "--name-only",
     ]
     if max_count is not None:
-        cmd.insert(4, f"--max-count={max_count}")
+        cmd.append(f"--max-count={max_count}")
     if since:
         cmd.append(f"--since={since}")
 
@@ -238,10 +255,9 @@ def get_commit_list(
 def get_commit_diff(repo_path: str, commit_hash: str) -> str:
     """Get the unified diff for a single commit."""
     cmd = [
-        "git", "-C", repo_path, "show",
-        "--no-ext-diff",  # ignore a user's diff.external (e.g. difftastic)
+        *_GIT, "-C", repo_path, "show",
+        *_DIFF_FLAGS,  # also ignores a user's diff.external (e.g. difftastic)
         "--format=",  # suppress commit info
-        "--unified=3",
         commit_hash,
         "--", ".",  # only tracked files
     ]
@@ -254,7 +270,7 @@ def get_commit_diff(repo_path: str, commit_hash: str) -> str:
 
 def get_file_content(repo_path: str, commit_hash: str, filepath: str) -> str:
     """Get file content at a specific commit."""
-    cmd = ["git", "-C", repo_path, "show", f"{commit_hash}:{filepath}"]
+    cmd = [*_GIT, "-C", repo_path, "show", f"{commit_hash}:{filepath}"]
     result = subprocess.run(cmd, capture_output=True, text=True, errors="replace")
     if result.returncode != 0:
         return ""
@@ -272,8 +288,7 @@ def get_range_diff(
     Unlike get_commit_diff (single commit), this spans an arc of development.
     pathspecs restrict the diff to matching files (git globs match '/').
     """
-    cmd = ["git", "-C", repo_path, "diff", "--no-ext-diff", "--unified=3",
-           base_ref, head_ref]
+    cmd = [*_GIT, "-C", repo_path, "diff", *_DIFF_FLAGS, base_ref, head_ref]
     if pathspecs:
         cmd.append("--")
         cmd.extend(pathspecs)
@@ -287,7 +302,7 @@ def get_range_diff(
 def _base_ref(repo_path: str, commit_hash: str) -> str:
     """Parent of a commit, or git's empty tree if it's the root commit."""
     result = subprocess.run(
-        ["git", "-C", repo_path, "rev-parse", "--verify", "-q", f"{commit_hash}^"],
+        [*_GIT, "-C", repo_path, "rev-parse", "--verify", "-q", f"{commit_hash}^"],
         capture_output=True, text=True, errors="replace",
     )
     ref = result.stdout.strip()
@@ -378,6 +393,37 @@ def _synthesize_instruction(messages: List[str]) -> str:
     return "; ".join(lines)
 
 
+def _build_arcs(commits: List[CommitInfo], span: int) -> List[List[CommitInfo]]:
+    """Split chronological first-parent commits into arcs of up to ``span``.
+
+    An arc is a run of consecutive accepted commits, so its cumulative diff
+    contains exactly the changes its instruction describes. A merge, or a
+    rejected commit that touches Clojure code (e.g. "wip"), ends the current
+    run. Commits touching no Clojure code are skipped without breaking it —
+    they can't contribute to the arc's Clojure-only diff.
+    """
+    accepted = {c.hash for c in filter_clojure_commits(commits)}
+    arcs: List[List[CommitInfo]] = []
+    run: List[CommitInfo] = []
+    for c in commits:
+        if c.hash in accepted:
+            run.append(c)
+            if len(run) == span:
+                arcs.append(run)
+                run = []
+        elif c.is_merge or any(is_clojure_file(f) for f in c.files):
+            if run:
+                arcs.append(run)
+            run = []
+    if run:
+        arcs.append(run)
+    return arcs
+
+
+def _literal(path: str) -> str:
+    return f":(literal){path}"
+
+
 def mine_repository(
     repo_path: str,
     repo_name: str = "",
@@ -414,15 +460,10 @@ def mine_repository(
             get_commit_list(repo_path, max_count=max_commits, since=since)
         ))
 
-    filtered = filter_clojure_commits(commits)
-
-    # Step 2: walk non-overlapping arcs, forming a cumulative triplet each.
+    # Step 2: walk arcs of consecutive accepted commits, a cumulative triplet each.
     span = max(1, triplet_span)
     examples: List[MinedExample] = []
-    for i in range(0, len(filtered), span):
-        arc = filtered[i:i + span]
-        if not arc:
-            continue
+    for arc in _build_arcs(commits, span):
         start, end = arc[0], arc[-1]
         base_ref = _base_ref(repo_path, start.hash)
         head_ref = end.hash
@@ -437,6 +478,24 @@ def mine_repository(
         if not parsed:
             continue
 
+        # The pathspec globs also match build/config files (project.clj,
+        # deps.edn, resources/*.edn) that the input never shows. Re-diff over
+        # exactly the shown source files so the target touches nothing else.
+        shown = []
+        for df in parsed:
+            shown.append(df.path)
+            if df.change_type == "renamed" and df.old_path:
+                shown.append(df.old_path)  # both sides, so the rename is detected
+        headers = sum(1 for l in diff_text.split("\n") if l.startswith("diff --git "))
+        if headers != len(parsed):
+            diff_text = get_range_diff(
+                repo_path, base_ref, head_ref,
+                pathspecs=[_literal(p) for p in dict.fromkeys(shown)],
+            )
+            parsed = [df for df in parse_diff(diff_text) if is_clojure_file(df.path)]
+            if not parsed:
+                continue
+
         before_state: Dict[str, str] = {}
         after_state: Dict[str, str] = {}
         for df in parsed:
@@ -445,7 +504,9 @@ def mine_repository(
             elif df.change_type == "added":
                 after_state[df.path] = get_file_content(repo_path, head_ref, df.path)
             else:
-                before_state[df.path] = get_file_content(repo_path, base_ref, df.path)
+                # A renamed file only exists under its old path at base_ref.
+                old = df.old_path if df.change_type == "renamed" and df.old_path else df.path
+                before_state[df.path] = get_file_content(repo_path, base_ref, old)
                 after_state[df.path] = get_file_content(repo_path, head_ref, df.path)
 
         if not before_state and not after_state:

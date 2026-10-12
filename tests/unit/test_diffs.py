@@ -99,3 +99,23 @@ class TestApplySection:
     def test_extract_diff_starts_at_header(self):
         assert extract_diff(self.TRACE + ";; apply:\n" + GOOD) == GOOD
         assert extract_diff(self.TRACE) == ""
+
+
+class TestLineSplitting:
+    """git counts lines by \\n only; form feeds (Lisp page breaks) and \\r are content."""
+
+    FF = (
+        "diff --git a/x.clj b/x.clj\n--- a/x.clj\n+++ b/x.clj\n"
+        "@@ -1,3 +1,3 @@\n (ns x)\n \x0c\n-(def a 1)\n+(def a 2)\n"
+    )
+
+    def test_form_feed_line_counts_once(self):
+        assert hunk_count_errors(self.FF) == []
+        assert check_patch(self.FF) is None
+
+    def test_fix_preserves_form_feed_and_trailing_newline(self):
+        assert fix_hunk_headers(self.FF) == self.FF
+
+    def test_crlf_content_counts_once(self):
+        d = self.FF.replace(" \x0c\n", " (comment)\r\n")
+        assert hunk_count_errors(d) == []

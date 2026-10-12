@@ -130,3 +130,41 @@ index abc1234..0000000
         files = parse_diff(self.SINGLE_FILE_DIFF)
         assert len(files[0].hunks) > 0
         assert all(isinstance(h, DiffHunk) for h in files[0].hunks)
+
+
+class TestHunkBodiesReadByCount:
+    def test_removed_line_starting_with_dashes_is_content(self):
+        diff = (
+            "diff --git a/q.clj b/q.clj\n"
+            "--- a/q.clj\n"
+            "+++ b/q.clj\n"
+            "@@ -1,2 +1,1 @@\n"
+            " (ns q)\n"
+            "--- /dev/null is a fine comment in sql\n"
+        )
+        files = parse_diff(diff)
+        assert len(files) == 1
+        assert files[0].change_type == "modified"
+        assert files[0].hunks[0].lines == [" (ns q)", "--- /dev/null is a fine comment in sql"]
+
+    def test_added_line_starting_with_pluses_is_content(self):
+        diff = (
+            "diff --git a/q.clj b/q.clj\n"
+            "--- a/q.clj\n"
+            "+++ b/q.clj\n"
+            "@@ -1 +1,2 @@\n"
+            " (ns q)\n"
+            "+++ /dev/null\n"
+        )
+        files = parse_diff(diff)
+        assert files[0].change_type == "modified"
+        assert files[0].hunks[0].lines[-1] == "+++ /dev/null"
+
+
+class TestFormFeed:
+    def test_form_feed_does_not_split_hunk_line(self):
+        diff = (
+            "diff --git a/q.clj b/q.clj\n--- a/q.clj\n+++ b/q.clj\n"
+            "@@ -1,2 +1,2 @@\n \x0c\n-(def a 1)\n+(def a 2)\n"
+        )
+        assert parse_diff(diff)[0].hunks[0].lines == [" \x0c", "-(def a 1)", "+(def a 2)"]

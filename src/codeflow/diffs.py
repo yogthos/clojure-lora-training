@@ -14,6 +14,16 @@ _HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$")
 _APPLY_LINE_RE = re.compile(r"^;;\s*apply:\s*$")
 
 
+def split_lines(text: str) -> List[str]:
+    """Split on ``\\n`` only, like git. ``str.splitlines`` also breaks on form
+    feeds (Lisp page breaks), ``\\r`` and other separators, which corrupts
+    hunk line counts. A final newline doesn't produce an empty last line."""
+    lines = text.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    return lines
+
+
 def extract_diff(text: str) -> str:
     """The patch portion of an output: from the first ``diff --git`` on."""
     idx = text.find("diff --git ")
@@ -65,7 +75,7 @@ def _header_count(raw: Optional[str]) -> int:
 
 def hunk_count_errors(diff: str) -> List[str]:
     """Hunks whose header line counts disagree with their bodies."""
-    lines = diff.splitlines()
+    lines = split_lines(diff)
     errors = []
     for m, h, start, end in _hunks(lines):
         want_old, want_new = _header_count(m.group(2)), _header_count(m.group(4))
@@ -84,7 +94,7 @@ def fix_hunk_headers(diff: str) -> str:
     Bare blank lines inside a body become ``' '`` context (what git emits).
     Only the counts change — this can't recover a truncated or invented body.
     """
-    lines = diff.splitlines()
+    lines = split_lines(diff)
     for m, h, start, end in _hunks(lines):
         for k in range(start, end):
             if lines[k] == "":
@@ -105,7 +115,7 @@ def check_patch(diff: str) -> Optional[str]:
     """
     if not diff.strip():
         return "empty diff"
-    if not any(_HUNK_RE.match(l) for l in diff.splitlines()):
+    if not any(_HUNK_RE.match(l) for l in split_lines(diff)):
         return "no hunks"
     errors = hunk_count_errors(diff)
     if errors:
@@ -128,7 +138,7 @@ def apply_section_errors(output: str) -> List[str]:
 
     Plain diff outputs (no ``;; eval:``) need no marker.
     """
-    lines = output.splitlines()
+    lines = split_lines(output)
     if not any(l.lstrip().startswith(";; eval:") for l in lines):
         return []
     for i, line in enumerate(lines):

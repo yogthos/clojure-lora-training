@@ -450,3 +450,144 @@ class TestDiffsApply:
             self._repo_with_trailing_blank_context(root)
             diff = get_commit_diff(str(root), "HEAD")
             assert self._applies(root, "HEAD~1", diff)
+
+
+def _git(root: Path, *args):
+    subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True)
+
+
+def _init(root: Path):
+    _git(root, "init", "-q", "-b", "main")
+    _git(root, "config", "user.email", "t@t")
+    _git(root, "config", "user.name", "t")
+
+
+def _commit(root: Path, files: dict, msg: str):
+    for path, content in files.items():
+        p = root / path
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content)
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "-m", msg)
+
+
+def _mine(root: Path, span: int):
+    return mine_repository(str(root), lifecycle_window=(0.0, 1.0), triplet_span=span)
+
+
+def _diff_paths(diff: str):
+    return [l.split(" b/", 1)[1] for l in diff.splitlines() if l.startswith("diff --git ")]
+
+
+class TestOutputMatchesInput:
+    """The target diff may only touch files the input shows (or creates)."""
+
+    def test_build_files_are_not_in_output(self, tmp_path):
+        _init(tmp_path)
+        _commit(tmp_path, {"src/app/core.clj": "(ns app.core)\n(defn f [] 1)\n",
+                           "project.clj": '(defproject app "0.1.0")\n'},
+                "initial project skeleton with core namespace")
+        _commit(tmp_path, {"src/app/core.clj": "(ns app.core)\n(defn f [] 2)\n",
+                           "project.clj": '(defproject app "0.2.0")\n',
+                           "deps.edn": "{:deps {}}\n"},
+                "change f to return two and bump version")
+        ex = _mine(tmp_path, 1)[-1]
+        assert _diff_paths(ex.diff) == ["src/app/core.clj"]
+        assert "### src/app/core.clj" in ex.to_dict()["input"]
+
+    def test_every_modified_output_file_is_in_input(self, tmp_path):
+        _init(tmp_path)
+        _commit(tmp_path, {"src/a.clj": "(ns a)\n(defn a [] 1)\n",
+                           "resources/config.edn": "{:port 1}\n"},
+                "initial namespaces and config file")
+        _commit(tmp_path, {"src/a.clj": "(ns a)\n(defn a [] 2)\n",
+                           "resources/config.edn": "{:port 2}\n"},
+                "change a to return two and update port")
+        ex = _mine(tmp_path, 1)[-1]
+        inp = ex.to_dict()["input"]
+        for path in _diff_paths(ex.diff):
+            assert f"### {path}" in inp
+
+
+class TestRenamedFiles:
+    def test_renamed_file_input_has_original_content(self, tmp_path):
+        _init(tmp_path)
+        body = "(ns util)\n" + "".join(f"(defn f{i} [] {i})\n" for i in range(12))
+        _commit(tmp_path, {"src/util.clj": body}, "initial utility namespace functions")
+        (tmp_path / "src/helpers.clj").write_text(
+            body.replace("(ns util)", "(ns helpers)").replace("(defn f3 [] 3)", "(defn f3 [] 33)"))
+        (tmp_path / "src/util.clj").unlink()
+        _git(tmp_path, "add", "-A")
+        _git(tmp_path, "commit", "-q", "-m", "rename util namespace to helpers and fix f3")
+        ex = _mine(tmp_path, 1)[-1]
+        assert "helpers.clj" in ex.diff
+        assert "(defn f3 [] 3)" in ex.to_dict()["input"]
+        for path, content in ex.before.items():
+            assert content.strip(), f"empty before-content for {path}"
+
+
+class TestArcBoundaries:
+    """An arc's diff must only contain changes from commits it describes."""
+
+    def test_filtered_commit_breaks_arc(self, tmp_path):
+        _init(tmp_path)
+        _commit(tmp_path, {"core.clj": "(ns c)\n(def a 1)\n"}, "add var a to the namespace")
+        _commit(tmp_path, {"core.clj": "(ns c)\n(def a 1)\n(def b 2)\n"}, "wip")
+        _commit(tmp_path, {"core.clj": "(ns c)\n(def a 1)\n(def b 2)\n(def d 4)\n"},
+                "add var d to the namespace")
+        for ex in _mine(tmp_path, 3):
+            assert "+(def b 2)" not in ex.diff, ex.instruction
+
+    def test_side_branch_commits_are_not_folded_into_mainline_arc(self, tmp_path):
+        _init(tmp_path)
+        _commit(tmp_path, {"core.clj": "(ns c)\n(def a 1)\n"}, "add var a to the namespace")
+        _git(tmp_path, "checkout", "-q", "-b", "side")
+        _commit(tmp_path, {"side.clj": "(ns side)\n(def s 1)\n"}, "add the side namespace here")
+        _git(tmp_path, "checkout", "-q", "main")
+        _commit(tmp_path, {"core.clj": "(ns c)\n(def a 2)\n"}, "change var a to two now")
+        _git(tmp_path, "merge", "-q", "--no-ff", "-m", "Merge branch side", "side")
+        _commit(tmp_path, {"core.clj": "(ns c)\n(def a 3)\n"}, "change var a to three now")
+        exs = _mine(tmp_path, 3)
+        assert exs
+        for ex in exs:
+            assert "side.clj" not in ex.diff
+            assert "side namespace" not in ex.instruction
+
+    def test_non_clojure_commit_does_not_break_arc(self, tmp_path):
+        _init(tmp_path)
+        _commit(tmp_path, {"core.clj": "(ns c)\n(def a 1)\n"}, "add var a to the namespace")
+        _commit(tmp_path, {"README.md": "hi\n"}, "x")
+        _commit(tmp_path, {"core.clj": "(ns c)\n(def a 1)\n(def d 4)\n"},
+                "add var d to the namespace")
+        exs = _mine(tmp_path, 2)
+        assert len(exs) == 1
+        assert "add var a" in exs[0].instruction and "add var d" in exs[0].instruction
+
+
+class TestElisionMarkers:
+    _BEFORE = "(ns app)\n\n(defn f-1 [] 1)\n\n(defn f-2 [] 2)\n\n(defn f-3 [] 3)\n"
+
+    def _fmt(self, diff):
+        from src.codeflow.git_mining.miner import _format_changed_regions
+        return _format_changed_regions({"core.clj": self._BEFORE}, diff)
+
+    def test_no_marker_between_adjacent_kept_forms(self):
+        diff = ("diff --git a/core.clj b/core.clj\n--- a/core.clj\n+++ b/core.clj\n"
+                "@@ -1,3 +1,3 @@\n (ns app)\n \n-(defn f-1 [] 1)\n+(defn f-1 [] 11)\n")
+        out = self._fmt(diff)
+        assert ";; ..." not in out
+        assert "(ns app)\n\n(defn f-1 [] 1)" in out
+
+    def test_marker_where_forms_were_dropped(self):
+        diff = ("diff --git a/core.clj b/core.clj\n--- a/core.clj\n+++ b/core.clj\n"
+                "@@ -5,1 +5,1 @@\n-(defn f-2 [] 2)\n+(defn f-2 [] 22)\n")
+        out = self._fmt(diff)
+        assert "(ns app)\n;; ...\n(defn f-2 [] 2)" in out
+
+    def test_hunk_between_forms_keeps_neighbours(self):
+        # Inserting a form into the blank gap after f-2: the old range is just
+        # the blank line, which overlaps no form.
+        diff = ("diff --git a/core.clj b/core.clj\n--- a/core.clj\n+++ b/core.clj\n"
+                "@@ -6,0 +6,2 @@\n+(defn g [] 0)\n+\n")
+        out = self._fmt(diff)
+        assert "f-2" in out and "f-3" in out
