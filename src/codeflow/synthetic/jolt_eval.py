@@ -27,7 +27,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
 from .nrepl_client import NReplClient
 
@@ -378,6 +378,12 @@ class JoltSession:
 
     def __exit__(self, *exc) -> None:
         self.close()
+
+
+def session_factory(jolt_path: str = "jolt") -> Callable[..., "JoltSession"]:
+    """Opens sessions on one jolt binary; keyword arguments (``files=``) pass
+    through to JoltSession."""
+    return lambda **kw: JoltSession(jolt_path=jolt_path, **kw)
 
 
 def eval_forms(

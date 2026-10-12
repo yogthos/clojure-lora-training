@@ -240,7 +240,7 @@ def step_generate_tasks(args, tree: FeatureTree, llm) -> List[GeneratedTask]:
 
 def step_generate_code(args, tasks: List[GeneratedTask], llm) -> List[CodeGenResult]:
     """Step 5: Solve each task live against a Jolt nREPL session."""
-    from src.codeflow.synthetic.jolt_eval import JoltSession, jolt_available
+    from src.codeflow.synthetic.jolt_eval import jolt_available, session_factory
 
     if not jolt_available(args.jolt):
         raise SystemExit(f"ERROR: jolt not found ({args.jolt}); solutions are "
@@ -248,7 +248,7 @@ def step_generate_code(args, tasks: List[GeneratedTask], llm) -> List[CodeGenRes
     return generate_training_examples(
         [t.to_dict() for t in tasks], llm,
         max_examples=args.target,
-        session_factory=lambda: JoltSession(jolt_path=args.jolt),
+        session_factory=session_factory(args.jolt),
         min_pass_rate=args.min_pass_rate,
     )
 

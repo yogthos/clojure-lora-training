@@ -16,9 +16,12 @@ from typing import Callable, List, Optional
 
 from ...llm.provider import LLMAuthError, LLMProvider
 from ...shared import _WORKFLOW_SYSTEM_PROMPT
+from ...utils.logging import get_logger
 from .jolt_eval import JoltSession
-from .live_trace import LiveTrace, accept_trace, run_live_trace
+from .live_trace import LiveTrace, _dropped, accept_trace, run_live_trace
 from .prompt_mining import MinedPrompt
+
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -109,7 +112,9 @@ def generate_workflows_concurrent(
                 for f in futures:
                     f.cancel()
                 raise
-            except Exception:
+            except Exception as e:
+                _dropped(f"worker error: {type(e).__name__}")
+                logger.warning("worker error: %r", e)
                 r = None
             if r is not None:
                 results.append(r)

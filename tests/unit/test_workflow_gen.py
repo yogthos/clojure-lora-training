@@ -5,6 +5,7 @@ import json
 import pytest
 
 from src.codeflow.synthetic.jolt_eval import EvalResult
+from src.codeflow.synthetic.live_trace import drop_counts
 from src.codeflow.synthetic.prompt_mining import MinedPrompt
 from src.codeflow.synthetic.workflow_gen import (
     WorkflowResult,
@@ -143,9 +144,12 @@ class TestConcurrentGeneration:
         class _Boom:
             def call(self, *a, **k):
                 raise RuntimeError("boom")
+        before = drop_counts().get("worker error: RuntimeError", 0)
         out = generate_workflows_concurrent([_prompt(i) for i in range(5)], _Boom(),
                                             max_workers=3, session_factory=_factory())
         assert out == []
+        # Counted, so a run that drops everything this way says why.
+        assert drop_counts()["worker error: RuntimeError"] - before == 5
 
     def test_auth_error_stops_the_run(self):
         class _NoAuth:

@@ -143,3 +143,17 @@ def test_torn_prompt_cache_then_top_up(tmp_path, git_data, monkeypatch):
     cache.write_text(lines[0] + "\n" + lines[1][:15])       # crash mid-write
     _run(mod, monkeypatch, _CountingLLM(), base + ["--target", "4"])
     assert len([json.loads(l) for l in cache.read_text().splitlines()]) == 4
+
+
+def test_session_factory_passes_files(monkeypatch):
+    # The acceptance check opens a session with the diff's files on its path.
+    import argparse
+    from src.codeflow.synthetic import jolt_eval
+    mod = _script()
+    seen = []
+    monkeypatch.setattr(jolt_eval, "JoltSession", lambda **kw: seen.append(kw) or _Session())
+    factory = mod.session_factory(argparse.Namespace(jolt="/x/jolt"))
+    factory()
+    factory(files={"src/a.clj": "(ns a)"})
+    assert seen == [{"jolt_path": "/x/jolt"},
+                    {"jolt_path": "/x/jolt", "files": {"src/a.clj": "(ns a)"}}]

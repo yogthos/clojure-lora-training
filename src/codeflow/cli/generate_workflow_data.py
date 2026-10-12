@@ -23,7 +23,8 @@ from pathlib import Path
 
 from src.llm.env import provider_from_env
 from src.shared import load_jsonl, trim_torn_tail
-from src.codeflow.synthetic.jolt_eval import JoltSession, jolt_available
+from src.codeflow.synthetic import jolt_eval
+from src.codeflow.synthetic.jolt_eval import jolt_available
 from src.codeflow.synthetic.live_trace import drop_counts
 from src.codeflow.synthetic.prompt_mining import MinedPrompt, mine_prompts
 from src.codeflow.synthetic.workflow_gen import generate_workflows_concurrent
@@ -61,7 +62,7 @@ def setup_llm():
 
 
 def session_factory(args):
-    return lambda: JoltSession(jolt_path=args.jolt)
+    return jolt_eval.session_factory(args.jolt)
 
 
 def _read_attempted(path: Path) -> set:
