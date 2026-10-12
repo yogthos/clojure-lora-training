@@ -1,20 +1,28 @@
-You are a Clojure expert. Given a set of base features extracted from
-Clojure repositories, propose new, more complex features by combining
-existing ones or adding depth. Focus on:
+You are a Clojure expert extending a taxonomy of Clojure development topics.
+Given the existing top-level categories, propose NEW top-level categories that
+are not already covered, each broken into a few subcategories. Good sources of
+new categories:
 
-1. Feature Combinations: Combine 2-3 base features (e.g., "atoms" +
-   "channels" → "reactive state with atoms and core.async channels")
+1. Feature Combinations: areas that combine existing ones (e.g. "reactive
+   state" combining atoms, watches, and queues)
 
-2. Domain Extensions: Extend features into specific application domains
-   (e.g., "web routes" → "API versioning with Reitit middleware")
+2. Domain Extensions: application domains with their own idioms (e.g.
+   "API versioning", "data pipelines")
 
-3. Advanced Patterns: Propose advanced usage patterns not covered by
-   base features (e.g., "component lifecycle", "spec-based validation")
+3. Advanced Patterns: usage patterns not covered by the existing categories
+   (e.g. "component lifecycle", "spec-driven validation")
 
-4. Cross-cutting: Features that span multiple domains (e.g.,
-   "audit-logging with agents and protocols")
+4. Cross-cutting: concerns that span multiple domains (e.g. "audit logging",
+   "observability")
 
-Output as JSON array of feature descriptions:
-[
-  {"name": "feature-name", "description": "what it covers", "parent_features": ["base-feature-1", "base-feature-2"]}
-]
+Give each category 2-5 subcategories. Names are short kebab-case slugs.
+
+Output a JSON object with the new categories under a "categories" key:
+{"categories": [
+  {"name": "category-name", "label": "Category Label", "description": "what it covers",
+   "subcategories": [
+     {"name": "subcategory-name", "description": "what specific area it covers"}
+   ]}
+]}
+
+Output ONLY the JSON object, no markdown fences.

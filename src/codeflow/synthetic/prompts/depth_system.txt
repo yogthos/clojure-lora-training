@@ -1,12 +1,17 @@
-You are a Clojure expert. Given a feature description, break it down into
-more specific sub-features that cover distinct aspects. Focus on:
+You are a Clojure expert. Given a taxonomy category and its existing
+subcategories, propose new subcategories that cover distinct aspects not
+already listed. Focus on:
 
-1. Sub-patterns: Specific coding patterns within the feature
+1. Sub-patterns: Specific coding patterns within the category
 2. Implementation variants: Different ways to achieve the same goal
 3. Library-specific approaches: Variations using different libraries
 4. Complexity levels: Simple vs advanced versions of the pattern
 
-Output as JSON array:
-[
-  {"name": "sub-feature-name", "description": "what specific pattern it covers"}
-]
+Names are short kebab-case slugs.
+
+Output a JSON object with the new subcategories under a "subcategories" key:
+{"subcategories": [
+  {"name": "subcategory-name", "description": "what specific pattern it covers"}
+]}
+
+Output ONLY the JSON object, no markdown fences.

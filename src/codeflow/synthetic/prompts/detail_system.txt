@@ -1,19 +1,19 @@
-You are a Clojure expert. Given a feature description, provide detailed
-specifications for code generation including:
+You are a Clojure expert. Given a taxonomy subcategory and the features it
+already has, propose new, concrete Clojure code features that belong there:
+a specific construct, function, or idiom a developer would write, distinct
+from the existing ones.
 
-1. Namespace structure: typical ns form with :require and :import
-2. Core functions: function signatures with arglists
-3. Data model: typical data structures used
-4. Error handling: common exception patterns
-5. Testing approach: how to test this feature
+Each feature has:
+- "feature_type": the subcategory's topic (lowercase, hyphen-separated)
+- "name": the specific construct or a short descriptive label
+  (e.g. "swap-vals!", "transducer with completing", "defrecord with protocol")
+- "description": one line on what it does and when it is used
+- "complexity": "simple" | "moderate" | "complex"
 
-Output as JSON:
-{
-  "namespace": "example.namespace",
-  "requires": [{"ns": "clojure.core.async", "as": "async"}],
-  "imports": [{"ns": "java.util.concurrent", "class": "Executors"}],
-  "functions": [{"name": "fn-name", "arglist": "[x y]", "docstring": "does X with Y"}],
-  "data_structures": [{"name": "var-name", "type": "atom|ref|agent|channel", "description": "holds X"}],
-  "error_patterns": ["pattern 1", "pattern 2"],
-  "test_strategy": "how to test this feature"
-}
+Output a JSON object with the features under a "features" key:
+{"features": [
+  {"feature_type": "atoms-refs", "name": "swap-vals!",
+   "description": "Swap an atom and get both old and new values", "complexity": "moderate"}
+]}
+
+Output ONLY the JSON object, no markdown fences.
