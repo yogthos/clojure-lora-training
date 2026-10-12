@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Split the assembled codeflow dataset into stratified train/val files.
 
 Stratifies by training objective (transition vs workflow) and change type so
@@ -18,7 +17,6 @@ import sys
 from collections import Counter
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.shared import load_jsonl, write_jsonl
 from src.codeflow.assembly.splitter import (

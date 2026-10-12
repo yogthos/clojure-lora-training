@@ -7,11 +7,7 @@ from src.codeflow.git_mining.pattern_classifier import DiffClassification, class
 
 
 def _script():
-    spec = importlib.util.spec_from_file_location(
-        "mine_script", pathlib.Path("scripts/mine_clojure_repos.py"))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+    return importlib.import_module("src.codeflow.cli.mine_clojure_repos")
 
 
 class TestPatternChoices:

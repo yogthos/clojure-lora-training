@@ -6,7 +6,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch, MagicMock
 
-from scripts.assemble_codeflow_dataset import (
+from src.codeflow.cli.assemble_codeflow_dataset import (
     parse_args,
     main,
 )

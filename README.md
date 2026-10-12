@@ -70,6 +70,9 @@ uv run python3 scripts/assemble_codeflow_dataset.py \
     --synth-dir data/synthetic/output \
     --output data/training/codeflow.jsonl
 
+# The same commands are installed as clj-lora-mine, clj-lora-generate-synthetic,
+# clj-lora-generate-workflows, clj-lora-assemble and clj-lora-split.
+
 # Run tests
 uv run python3 -m pytest
 

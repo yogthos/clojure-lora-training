@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Assemble a Code Flow training dataset for LLaMA-Factory.
 
 Merges git-mined and synthetic Clojure code-evolution data,

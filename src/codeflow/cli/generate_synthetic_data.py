@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Generate synthetic Clojure training data using the EpiCoder pipeline.
 
 Full pipeline:
@@ -36,7 +35,6 @@ from pathlib import Path
 from typing import List, Dict, Optional
 from collections import Counter
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.llm.provider import LLMProvider
 from src.codeflow.synthetic.extract_features import (

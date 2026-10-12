@@ -30,12 +30,17 @@ dev = ["clojure-lora-trainer[test,api,mlx,json-repair]"]
 dev = ["pytest>=7.0.0", "pytest-cov>=4.0.0"]
 
 [project.scripts]
-clj-lora-mine = "src.codeflow.git_mining.miner:mine_repository"
-clj-lora-assemble = "src.codeflow.assembly.assembler:assemble_dataset"
+clj-lora-mine = "src.codeflow.cli.mine_clojure_repos:main"
+clj-lora-generate-synthetic = "src.codeflow.cli.generate_synthetic_data:main"
+clj-lora-generate-workflows = "src.codeflow.cli.generate_workflow_data:main"
+clj-lora-assemble = "src.codeflow.cli.assemble_codeflow_dataset:main"
+clj-lora-split = "src.codeflow.cli.split_codeflow_dataset:main"
 
+# Code imports the project as the ``src`` package (``from ...shared``), so
+# that is the package root.
 [tool.setuptools.packages.find]
-where = ["src"]
-exclude = ["src.legacy*"]
+where = ["."]
+include = ["src", "src.*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -49,4 +54,4 @@ markers = [
 addopts = ["-v", "--tb=short", "--strict-markers"]
 
 [tool.setuptools.package-data]
-"codeflow.synthetic" = ["prompts/*.txt"]
+"src.codeflow.synthetic" = ["prompts/*.txt"]

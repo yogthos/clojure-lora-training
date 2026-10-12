@@ -1,4 +1,4 @@
-"""Tests for scripts/generate_synthetic_data.py output handling."""
+"""Tests for src/codeflow/cli/generate_synthetic_data.py output handling."""
 
 import argparse
 import importlib.util
@@ -8,11 +8,7 @@ from src.codeflow.synthetic.gen_code import CodeGenResult
 
 
 def _script():
-    spec = importlib.util.spec_from_file_location(
-        "generate_synthetic_data", pathlib.Path("scripts/generate_synthetic_data.py"))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+    return importlib.import_module("src.codeflow.cli.generate_synthetic_data")
 
 
 def _args(**kw):

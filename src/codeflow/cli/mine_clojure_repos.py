@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Mine Clojure repositories for before/after code training pairs.
 
 End-to-end workflow:
@@ -39,8 +38,6 @@ from pathlib import Path
 from typing import List, Optional
 from collections import Counter
 
-# Ensure project root is on sys.path
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.codeflow.git_mining.miner import mine_repository, MinedExample
 from src.codeflow.git_mining.pattern_classifier import DiffClassification, classify_diff

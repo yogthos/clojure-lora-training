@@ -90,12 +90,21 @@ class TestLoadJSONL:
             result = load_jsonl(dir_path)
             assert len(result) == 2
 
-    def test_skips_malformed_lines(self):
+    def test_malformed_line_is_an_error(self):
+        # A corrupt record in the middle is data loss, not something to skip.
+        import pytest
         with TemporaryDirectory() as d:
             p = Path(d) / "test.jsonl"
             p.write_text('{"valid": 1}\nnot json\n{"also": 2}\n')
-            result = load_jsonl(p)
-            assert len(result) == 2
+            with pytest.raises(ValueError, match="test.jsonl:2"):
+                load_jsonl(p)
+
+    def test_torn_final_line_is_skipped(self):
+        # An interrupted append leaves an unterminated last line.
+        with TemporaryDirectory() as d:
+            p = Path(d) / "test.jsonl"
+            p.write_text('{"valid": 1}\n{"also": 2}\n{"to')
+            assert load_jsonl(p) == [{"valid": 1}, {"also": 2}]
 
 
 class TestComputeDedupKey:

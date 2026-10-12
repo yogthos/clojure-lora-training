@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Generate plan-first, iterative-REPL workflow training data.
 
 Pipeline:
@@ -22,9 +21,8 @@ import sys
 from dataclasses import asdict
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.shared import load_jsonl
+from src.shared import load_jsonl, trim_torn_tail
 from src.codeflow.synthetic.jolt_eval import jolt_available
 from src.codeflow.synthetic.prompt_mining import MinedPrompt, mine_prompts
 from src.codeflow.synthetic.workflow_gen import generate_workflows_concurrent
@@ -77,6 +75,23 @@ def setup_llm():
     ))
 
 
+def _read_attempted(path: Path) -> set:
+    """Instructions already attempted: one JSON string per line. Older runs
+    wrote the raw text with newlines flattened; those lines are kept as-is."""
+    if not path.exists():
+        return set()
+    done = set()
+    for line in path.read_text().split("\n"):
+        if not line:
+            continue
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError:
+            value = line
+        done.add(value if isinstance(value, str) else line)
+    return done
+
+
 def main() -> int:
     import random
     args = parse_args()
@@ -120,7 +135,9 @@ def main() -> int:
         print(f"Mined {len(new)} user-style prompts ({len(prompts)} total)", file=sys.stderr)
     prompts = prompts[:args.target]
 
-    attempted = set(attempted_path.read_text().splitlines()) if attempted_path.exists() else set()
+    for p in (out, prompts_path, attempted_path):
+        trim_torn_tail(p)
+    attempted = _read_attempted(attempted_path)
     todo = [p for p in prompts if p.source_instruction not in attempted]
     if len(todo) < len(prompts):
         print(f"Resuming: {len(prompts) - len(todo)} prompts already attempted", file=sys.stderr)
@@ -135,7 +152,7 @@ def main() -> int:
         f.flush()
 
     def on_attempt(prompt, _result):
-        af.write(prompt.source_instruction.replace("\n", " ") + "\n")
+        af.write(json.dumps(prompt.source_instruction, ensure_ascii=False) + "\n")
         af.flush()
 
     def on_progress(done, total, kept):

@@ -146,15 +146,33 @@ def compute_dedup_key(example: dict) -> str:
 
 
 def _read_file(path: Path) -> List[dict]:
-    """Load JSONL from a single file, skipping blank/malformed lines."""
+    """Load JSONL from a single file, skipping blank lines.
+
+    A malformed line is an error naming the file and line. The one exception is
+    an unterminated last line, which is what an interrupted append leaves
+    behind; it is skipped.
+    """
+    text = path.read_text()
+    lines = text.split("\n")
     records = []
-    with open(path) as f:
-        for line in f:
-            line = line.strip()
-            if not line:
+    for lineno, line in enumerate(lines, 1):
+        if not line.strip():
+            continue
+        try:
+            records.append(json.loads(line))
+        except json.JSONDecodeError as e:
+            if lineno == len(lines):  # no newline after it: a torn write
                 continue
-            try:
-                records.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
+            raise ValueError(f"{path}:{lineno}: malformed JSON: {e}") from e
     return records
+
+
+def trim_torn_tail(path: PathOrStr) -> None:
+    """Drop an unterminated last line so appends start on a fresh line."""
+    p = Path(path)
+    if not p.exists():
+        return
+    data = p.read_bytes()
+    if data and not data.endswith(b"\n"):
+        with open(p, "r+b") as f:
+            f.truncate(data.rfind(b"\n") + 1)

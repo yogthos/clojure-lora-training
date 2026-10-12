@@ -1,4 +1,4 @@
-"""Resume behaviour of scripts/generate_workflow_data.py."""
+"""Resume behaviour of src/codeflow/cli/generate_workflow_data.py."""
 
 import importlib.util
 import json
@@ -33,11 +33,7 @@ class _CountingLLM:
 
 
 def _script():
-    spec = importlib.util.spec_from_file_location(
-        "gen_wf", pathlib.Path("scripts/generate_workflow_data.py"))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+    return importlib.import_module("src.codeflow.cli.generate_workflow_data")
 
 
 def _run(mod, monkeypatch, llm, argv):
@@ -49,7 +45,7 @@ def _run(mod, monkeypatch, llm, argv):
 @pytest.fixture
 def git_data(tmp_path):
     p = tmp_path / "git.jsonl"
-    msgs = ["add nested schema support", "fix the broken retry loop",
+    msgs = ["add nested schema support\n\nwith a body", "fix the broken retry loop",
             "drop me from the output please", "implement streaming csv parser"]
     p.write_text("".join(json.dumps({"instruction": m}) + "\n" for m in msgs))
     return p
@@ -94,3 +90,22 @@ def test_larger_target_tops_up_prompts(tmp_path, git_data, monkeypatch):
     _run(mod, monkeypatch, more, base + ["--target", "4"])
     assert more.mining_calls == 2
     assert more.workflow_calls == 2
+
+
+def test_resume_after_torn_write(tmp_path, git_data, monkeypatch):
+    mod = _script()
+    out = tmp_path / "wf.jsonl"
+    argv = ["--git-data", str(git_data), "-o", str(out), "--target", "4",
+            "--no-verify-execution", "--workers", "1"]
+    _run(mod, monkeypatch, _CountingLLM(), argv)
+    lines = out.read_text().splitlines()
+    # Simulate a crash mid-write: drop the last record's attempt marker and
+    # leave half its line behind.
+    out.write_text("\n".join(lines[:-1]) + "\n" + lines[-1][:20])
+    att = tmp_path / "wf.jsonl.attempted"
+    att.write_text("".join(att.read_text().splitlines(keepends=True)[:-1]))
+    again = _CountingLLM()
+    _run(mod, monkeypatch, again, argv)
+    assert again.workflow_calls == 1
+    recs = [json.loads(l) for l in out.read_text().splitlines()]
+    assert len(recs) == 3
