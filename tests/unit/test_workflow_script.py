@@ -7,29 +7,45 @@ import sys
 
 import pytest
 
-_DIFF = (
-    "diff --git a/src/x.clj b/src/x.clj\n--- a/src/x.clj\n+++ b/src/x.clj\n"
-    "@@ -1,2 +1,2 @@\n (ns x)\n-(defn f [] 1)\n+(defn f [] 3)\n"
-)
-_TRACE = ";; Goal: g\n;; nREPL session:\n;; eval: (+ 1 2)\n;; result: ?\n;; apply:\n" + _DIFF
+_DIFF = ("diff --git a/src/x.clj b/src/x.clj\n--- /dev/null\n+++ b/src/x.clj\n"
+         "@@ -0,0 +1,2 @@\n+(ns x)\n+(defn f [] 3)\n")
 
 
 class _CountingLLM:
+    """Mines prompts, then plays a 3-eval trace per prompt; counts trace starts."""
+
     def __init__(self):
         self.mining_calls = 0
-        self.workflow_calls = 0
+        self.started = set()
+
+    @property
+    def workflow_calls(self):
+        return len(self.started)
 
     def call(self, system_prompt, user_prompt, require_json=False, **k):
         if user_prompt.startswith("Commit message:"):
             self.mining_calls += 1
             msg = user_prompt.split("\n", 1)[1]
             return json.dumps({"user_prompt": f"please {msg}", "project_context": "a lib"})
-        if require_json:
-            return json.dumps({"goal": "g", "steps": [{"name": "s"}]})
-        self.workflow_calls += 1
+        n = user_prompt.count("--- step ")
+        if n == 0:
+            self.started.add(user_prompt)   # a retry repeats the same prompt
         if "drop me" in user_prompt:
-            return "no diff here"   # dropped by the trace gates
-        return _TRACE
+            return "no step here"   # malformed every time: dropped
+        if n < 3:
+            return json.dumps({"thinking": "t", "action": "eval", "code": f"(+ {n} 1)"})
+        return json.dumps({"thinking": "t", "action": "apply", "diff": _DIFF})
+
+
+class _Session:
+    alive = True
+
+    def eval(self, code):
+        from src.codeflow.synthetic.jolt_eval import EvalResult
+        return EvalResult(form=code, value="1")
+
+    def close(self):
+        pass
 
 
 def _script():
@@ -38,6 +54,8 @@ def _script():
 
 def _run(mod, monkeypatch, llm, argv):
     monkeypatch.setattr(mod, "setup_llm", lambda: llm)
+    monkeypatch.setattr(mod, "jolt_available", lambda path: True)
+    monkeypatch.setattr(mod, "session_factory", lambda args: _Session)
     monkeypatch.setattr(sys, "argv", ["gen"] + argv)
     assert mod.main() == 0
 
@@ -55,7 +73,7 @@ def test_rerun_resumes_without_redoing_work(tmp_path, git_data, monkeypatch):
     mod = _script()
     out = tmp_path / "wf.jsonl"
     argv = ["--git-data", str(git_data), "-o", str(out), "--target", "4",
-            "--no-verify-execution", "--workers", "1"]
+            "--workers", "1"]
     first = _CountingLLM()
     _run(mod, monkeypatch, first, argv)
     kept = out.read_text().splitlines()
@@ -72,7 +90,7 @@ def test_fresh_starts_over(tmp_path, git_data, monkeypatch):
     mod = _script()
     out = tmp_path / "wf.jsonl"
     argv = ["--git-data", str(git_data), "-o", str(out), "--target", "4",
-            "--no-verify-execution", "--workers", "1"]
+            "--workers", "1"]
     _run(mod, monkeypatch, _CountingLLM(), argv)
     fresh = _CountingLLM()
     _run(mod, monkeypatch, fresh, argv + ["--fresh"])
@@ -84,7 +102,7 @@ def test_larger_target_tops_up_prompts(tmp_path, git_data, monkeypatch):
     mod = _script()
     out = tmp_path / "wf.jsonl"
     base = ["--git-data", str(git_data), "-o", str(out),
-            "--no-verify-execution", "--workers", "1"]
+            "--workers", "1"]
     _run(mod, monkeypatch, _CountingLLM(), base + ["--target", "2"])
     more = _CountingLLM()
     _run(mod, monkeypatch, more, base + ["--target", "4"])
@@ -96,7 +114,7 @@ def test_resume_after_torn_write(tmp_path, git_data, monkeypatch):
     mod = _script()
     out = tmp_path / "wf.jsonl"
     argv = ["--git-data", str(git_data), "-o", str(out), "--target", "4",
-            "--no-verify-execution", "--workers", "1"]
+            "--workers", "1"]
     _run(mod, monkeypatch, _CountingLLM(), argv)
     lines = out.read_text().splitlines()
     # Simulate a crash mid-write: drop the last record's attempt marker and
@@ -109,3 +127,15 @@ def test_resume_after_torn_write(tmp_path, git_data, monkeypatch):
     assert again.workflow_calls == 1
     recs = [json.loads(l) for l in out.read_text().splitlines()]
     assert len(recs) == 3
+
+
+def test_torn_prompt_cache_then_top_up(tmp_path, git_data, monkeypatch):
+    mod = _script()
+    out = tmp_path / "wf.jsonl"
+    base = ["--git-data", str(git_data), "-o", str(out), "--workers", "1"]
+    _run(mod, monkeypatch, _CountingLLM(), base + ["--target", "2"])
+    cache = tmp_path / "wf.jsonl.prompts"
+    lines = cache.read_text().splitlines()
+    cache.write_text(lines[0] + "\n" + lines[1][:15])       # crash mid-write
+    _run(mod, monkeypatch, _CountingLLM(), base + ["--target", "4"])
+    assert len([json.loads(l) for l in cache.read_text().splitlines()]) == 4

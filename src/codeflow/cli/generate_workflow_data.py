@@ -3,9 +3,9 @@
 Pipeline:
   1. Load mined git records (commit-message intentions)
   2. Backtranslate substantive messages into vague user-style prompts
-  3. For each prompt: plan (goal/files/steps) -> workflow (iterative REPL build
-     with real failure/recovery) -> execute & ground in a Jolt nREPL session
-  4. Keep traces that reach a correct end state; write LLaMA-Factory JSONL
+  3. For each prompt, generate a trace live: each step's eval runs in a Jolt
+     nREPL session and the real result is shown before the next step
+  4. Keep traces that reach a working end state; write multi-turn JSONL
 
 Usage:
     LLM_PROVIDER=deepseek python scripts/generate_workflow_data.py \\
@@ -23,7 +23,7 @@ from pathlib import Path
 
 
 from src.shared import load_jsonl, trim_torn_tail
-from src.codeflow.synthetic.jolt_eval import jolt_available
+from src.codeflow.synthetic.jolt_eval import JoltSession, jolt_available
 from src.codeflow.synthetic.prompt_mining import MinedPrompt, mine_prompts
 from src.codeflow.synthetic.workflow_gen import generate_workflows_concurrent
 
@@ -40,9 +40,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--target", type=int, default=200,
                    help="Number of prompts to process (kept count is lower after verification)")
     p.add_argument("--min-pass-rate", type=float, default=0.6,
-                   help="Min fraction of a trace's forms that must run cleanly to keep it")
-    p.add_argument("--no-verify-execution", action="store_true",
-                   help="Skip jolt execution/grounding (results stay LLM-fabricated)")
+                   help="Min fraction of a trace's evals that must run cleanly to keep it")
+    p.add_argument("--jolt", default="jolt", metavar="PATH",
+                   help="jolt binary that runs the REPL sessions (default: jolt on PATH)")
     p.add_argument("--workers", type=int, default=8,
                    help="Concurrent worker threads (the work is I/O-bound on the "
                         "LLM API and jolt). Default 8.")
@@ -75,6 +75,10 @@ def setup_llm():
     ))
 
 
+def session_factory(args):
+    return lambda: JoltSession(jolt_path=args.jolt)
+
+
 def _read_attempted(path: Path) -> set:
     """Instructions already attempted: one JSON string per line. Older runs
     wrote the raw text with newlines flattened; those lines are kept as-is."""
@@ -97,12 +101,9 @@ def main() -> int:
     args = parse_args()
     llm = setup_llm()
 
-    verify = not args.no_verify_execution
-    if verify and not jolt_available():
-        # Without execution every ';; result:' stays LLM-fabricated: refuse
-        # rather than silently producing ungrounded data.
-        print("ERROR: jolt not found on PATH. Install it, or pass "
-              "--no-verify-execution to keep fabricated results.", file=sys.stderr)
+    if not jolt_available(args.jolt):
+        print(f"ERROR: jolt not found ({args.jolt}); traces are generated against "
+              "a live REPL.", file=sys.stderr)
         return 1
 
     out = Path(args.output)
@@ -114,6 +115,10 @@ def main() -> int:
     if args.fresh:
         for p in (out, prompts_path, attempted_path):
             p.unlink(missing_ok=True)
+    # An interrupted run can leave a half-written last line in any of these;
+    # drop it before reading or appending.
+    for p in (out, prompts_path, attempted_path):
+        trim_torn_tail(p)
 
     records = []
     for path in args.git_data:
@@ -135,8 +140,6 @@ def main() -> int:
         print(f"Mined {len(new)} user-style prompts ({len(prompts)} total)", file=sys.stderr)
     prompts = prompts[:args.target]
 
-    for p in (out, prompts_path, attempted_path):
-        trim_torn_tail(p)
     attempted = _read_attempted(attempted_path)
     todo = [p for p in prompts if p.source_instruction not in attempted]
     if len(todo) < len(prompts):
@@ -165,7 +168,7 @@ def main() -> int:
         results = generate_workflows_concurrent(
             todo, llm,
             max_workers=args.workers,
-            verify=verify,
+            session_factory=session_factory(args),
             min_pass_rate=args.min_pass_rate,
             on_result=on_result,
             on_progress=on_progress,
@@ -176,7 +179,7 @@ def main() -> int:
         af.close()
 
     kept = len(results)
-    print(f"Generated {kept} verified workflows "
+    print(f"Generated {kept} workflows "
           f"({len(todo) - kept} dropped)", file=sys.stderr)
     print(f"Output: {out}", file=sys.stderr)
     return 0

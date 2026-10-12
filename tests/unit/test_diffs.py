@@ -119,3 +119,23 @@ class TestLineSplitting:
     def test_crlf_content_counts_once(self):
         d = self.FF.replace(" \x0c\n", " (comment)\r\n")
         assert hunk_count_errors(d) == []
+
+
+class TestNewFileContents:
+    def test_created_files_only(self):
+        from src.codeflow.diffs import new_file_contents
+        diff = ("diff --git a/src/a.clj b/src/a.clj\n--- /dev/null\n+++ b/src/a.clj\n"
+                "@@ -0,0 +1,2 @@\n+(ns a)\n+(def x 1)\n"
+                "diff --git a/src/b.clj b/src/b.clj\n--- a/src/b.clj\n+++ b/src/b.clj\n"
+                "@@ -1,1 +1,1 @@\n-(ns b)\n+(ns b2)\n"
+                "diff --git a/src/c.clj b/src/c.clj\nnew file mode 100644\n--- /dev/null\n"
+                "+++ b/src/c.clj\n@@ -0,0 +1 @@\n+(ns c)\n")
+        assert new_file_contents(diff) == {"src/a.clj": "(ns a)\n(def x 1)\n",
+                                           "src/c.clj": "(ns c)\n"}
+
+    def test_multi_hunk_new_file_stops_at_next_file(self):
+        from src.codeflow.diffs import new_file_contents
+        diff = ("diff --git a/a.clj b/a.clj\n--- /dev/null\n+++ b/a.clj\n"
+                "@@ -0,0 +1 @@\n+(ns a)\n@@ -0,0 +2 @@\n+(def y 2)\n"
+                "diff --git a/b.clj b/b.clj\n--- /dev/null\n+++ b/b.clj\n@@ -0,0 +1 @@\n+(ns b)\n")
+        assert new_file_contents(diff) == {"a.clj": "(ns a)\n(def y 2)\n", "b.clj": "(ns b)\n"}

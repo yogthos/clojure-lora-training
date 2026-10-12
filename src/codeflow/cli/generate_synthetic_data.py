@@ -5,7 +5,7 @@ Full pipeline:
   2. Build feature taxonomy tree
   3. Evolve tree (breadth → depth → detail)
   4. Generate coding tasks from tree nodes
-  5. Generate REPL-driven code solutions (analysis → code passes)
+  5. Solve each task live in a Jolt nREPL session (see live_trace)
   6. Select diverse coreset via k-center greedy
   7. Merge with mined git-history data
   8. Output LLaMA-Factory compatible JSONL
@@ -59,11 +59,7 @@ from src.codeflow.synthetic.gen_question import (
     GeneratedTask,
     format_task_for_training,
 )
-from src.codeflow.synthetic.gen_code import (
-    generate_training_examples,
-    CodeGenResult,
-    validate_solution,
-)
+from src.codeflow.synthetic.gen_code import CodeGenResult, generate_training_examples
 from src.codeflow.synthetic.cluster import select_by_feature_diversity
 from src.codeflow.synthetic.file_utils import (
     merge_jsonl,
@@ -122,13 +118,12 @@ def parse_args() -> argparse.Namespace:
         help="Skip coreset selection",
     )
     parser.add_argument(
-        "--no-verify-execution", action="store_true",
-        help="Skip running generated REPL forms through jolt (by default "
-             "forms are executed, results grounded, and failing solutions dropped)",
+        "--jolt", default="jolt", metavar="PATH",
+        help="jolt binary that runs the REPL sessions (default: jolt on PATH)",
     )
     parser.add_argument(
-        "--min-pass-rate", type=float, default=0.8,
-        help="Min fraction of a solution's forms that must run cleanly to keep it",
+        "--min-pass-rate", type=float, default=0.6,
+        help="Min fraction of a solution's evals that must run cleanly to keep it",
     )
     parser.add_argument(
         "--val-split", type=float, default=0.05,
@@ -274,27 +269,18 @@ def step_generate_tasks(args, tree: FeatureTree, llm) -> List[GeneratedTask]:
 
 
 def step_generate_code(args, tasks: List[GeneratedTask], llm) -> List[CodeGenResult]:
-    """Step 5: Generate REPL-driven code solutions."""
-    from src.codeflow.synthetic.jolt_eval import jolt_available
+    """Step 5: Solve each task live against a Jolt nREPL session."""
+    from src.codeflow.synthetic.jolt_eval import JoltSession, jolt_available
 
-    verify = not args.no_verify_execution
-    if verify and not jolt_available():
-        # Without execution every ';; result:' stays LLM-fabricated: refuse
-        # rather than silently producing ungrounded data.
-        raise SystemExit("ERROR: jolt not found on PATH. Install it, or pass "
-                         "--no-verify-execution to keep fabricated results.")
-
-    task_dicts = [t.to_dict() for t in tasks]
-    results = generate_training_examples(
-        task_dicts, llm,
+    if not jolt_available(args.jolt):
+        raise SystemExit(f"ERROR: jolt not found ({args.jolt}); solutions are "
+                         "generated against a live REPL.")
+    return generate_training_examples(
+        [t.to_dict() for t in tasks], llm,
         max_examples=args.target,
-        verify=verify,
+        session_factory=lambda: JoltSession(jolt_path=args.jolt),
         min_pass_rate=args.min_pass_rate,
     )
-
-    # Final structural gate (verification already dropped non-runnable solutions).
-    valid = [r for r in results if validate_solution(r.solution)]
-    return valid
 
 
 def step_select_coreset(

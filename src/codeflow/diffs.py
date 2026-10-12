@@ -8,7 +8,7 @@ gate every record passes before it ships.
 
 import re
 import subprocess
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 _HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$")
 _APPLY_LINE_RE = re.compile(r"^;;\s*apply:\s*$")
@@ -163,3 +163,19 @@ def repair_trace_diff(solution: str) -> Optional[str]:
     if check_patch(fixed) is not None:
         return None
     return solution[: len(solution) - len(diff)] + fixed
+
+
+def new_file_contents(diff: str) -> Dict[str, str]:
+    """Path -> full content of each file the diff creates (``--- /dev/null``)."""
+    files: Dict[str, str] = {}
+    lines = split_lines(diff)
+    for i, line in enumerate(lines):
+        if line != "--- /dev/null" or i + 1 >= len(lines) or not lines[i + 1].startswith("+++ b/"):
+            continue
+        end = next((j for j in range(i + 2, len(lines)) if lines[j].startswith("diff --git ")),
+                   len(lines))
+        section = lines[i + 2:end]
+        added = [l[1:] for _, _, start, stop in _hunks(section)
+                 for l in section[start:stop] if l.startswith("+")]
+        files[lines[i + 1][len("+++ b/"):]] = "".join(l + "\n" for l in added)
+    return files

@@ -1,245 +1,94 @@
-"""Tests for synthetic data generation: gen_code.py"""
+"""Tests for EpiCoder task solutions generated through the live trace loop."""
 
 import json
-import shutil
+
 import pytest
-from src.codeflow.synthetic.gen_code import (
-    CodeGenResult,
-    generate_analysis,
-    generate_code,
-    generate_training_examples,
-    validate_solution,
-)
+
+from src.codeflow.synthetic.gen_code import CodeGenResult, generate_training_examples
+from src.codeflow.synthetic.jolt_eval import EvalResult
+from src.codeflow.synthetic.live_trace import accept_trace, run_live_trace
+from src.llm.provider import LLMAuthError, LLMError
+
+_DIFF = ("diff --git a/src/sq.clj b/src/sq.clj\n--- /dev/null\n+++ b/src/sq.clj\n"
+         "@@ -0,0 +1,2 @@\n+(ns sq)\n+(defn sq [x] (* x x))\n")
+_CODE = ["(defn sq [x] (* x x))", "(sq 5)", "(sq -2)"]
 
 
-class _FakeLLM:
-    """Returns a fixed solution for the code pass, stub analysis for JSON."""
-
-    def __init__(self, solution: str):
-        self.solution = solution
-
-    def call(self, system_prompt, user_prompt, temperature=None,
-             max_tokens=None, require_json=False, reject_truncated=False):
-        self.reject_truncated = reject_truncated
-        if require_json:
-            return json.dumps({"files_affected": ["src/core.clj"],
-                               "repl_exploration": []})
-        return self.solution
+class _StepLLM:
+    def call(self, system_prompt, user_prompt, **kw):
+        n = user_prompt.count("--- step ")
+        if n < len(_CODE):
+            return json.dumps({"thinking": f"step {n}", "action": "eval", "code": _CODE[n]})
+        return json.dumps({"thinking": "done", "action": "apply", "diff": _DIFF})
 
 
-@pytest.mark.skipif(shutil.which("jolt") is None, reason="jolt not installed")
-class TestExecutionVerification:
-    _GOOD = (
-        ";; nREPL session:\n"
-        ";; eval: (defn sq [x] (* x x))\n;; result: WRONG\n"
-        ";; eval: (sq 5)\n;; result: WRONG\n"
-        ";; apply:\ndiff --git a/core.clj b/core.clj\n@@ -1 +1 @@\n+x\n"
-    )
-    _BAD = (
-        ";; eval: (require 'nope.phantom.core)\n;; result: nil\n"
-        ";; apply:\ndiff --git a/x b/x\n@@ -1 +1 @@\n+x\n"
-    )
+class _Session:
+    def __init__(self, failing=()):
+        self.failing = failing
+        self.alive = True
 
-    def test_verified_solution_is_grounded(self):
-        results = generate_training_examples(
-            [{"instruction": "square"}], _FakeLLM(self._GOOD),
-            verify=True, min_pass_rate=1.0,
-        )
-        assert len(results) == 1
-        assert results[0].verified
-        assert results[0].pass_rate == 1.0
-        assert "25" in results[0].solution        # real result, grounded
-        assert "WRONG" not in results[0].solution
+    def eval(self, code):
+        if code in self.failing:
+            return EvalResult(form=code, ok=False, error="boom")
+        return EvalResult(form=code, value="25")
 
-    def test_low_pass_rate_is_filtered_out(self):
-        results = generate_training_examples(
-            [{"instruction": "phantom"}], _FakeLLM(self._BAD),
-            verify=True, min_pass_rate=0.9,
-        )
-        assert results == []
-
-    def test_verify_false_keeps_solution_unchanged(self):
-        results = generate_training_examples(
-            [{"instruction": "phantom"}], _FakeLLM(self._BAD),
-            verify=False,
-        )
-        assert len(results) == 1
-        assert not results[0].verified
+    def close(self):
+        pass
 
 
-class TestCodeGenResult:
-    def test_to_training_example(self):
-        result = CodeGenResult(
-            instruction="Fix nil handling",
-            analysis={"problem": "nil handling", "files_affected": ["src/core.clj"]},
-            solution=""";; nREPL session:
-;; eval: (require '[app.core] :reload)
-;; result: nil
-;; eval: (app.core/parse {:a 1})
-;; result: {:a 1}
-;; apply:
-diff --git a/src/core.clj b/src/core.clj
---- a/src/core.clj
-+++ b/src/core.clj
-@@ -1 +1 @@
--(defn parse [x] x)
-+(defn parse [x] (if x (assoc x :parsed true) {}))""",
-        )
-        example = result.to_training_example()
-        assert "system" in example
-        assert "instruction" in example
-        assert "input" in example
-        assert "output" in example
-        assert example["instruction"] == "Fix nil handling"
-        assert ";; eval:" in example["output"]
-        assert "diff --git" in example["output"]
-
-    def test_to_jsonl(self):
-        result = CodeGenResult(
-            instruction="Add validation",
-            analysis={},
-            solution=";; nREPL session:\n;; eval: (+ 1 2)\n;; result: 3\n;; apply:\ndiff --git a/f.clj b/f.clj",
-        )
-        line = result.to_jsonl()
-        parsed = json.loads(line)
-        assert parsed["instruction"] == "Add validation"
-
-    def test_input_holds_nothing_unavailable_at_inference(self):
-        # The analysis (files, REPL plan) is the model's own scratch work; at
-        # inference the user supplies only the instruction, so neither the
-        # plan nor a copy of the instruction belongs in the input.
-        result = CodeGenResult(
-            instruction="Fix bug in parser",
-            analysis={
-                "files_affected": ["src/parser.clj", "src/utils.clj"],
-                "repl_exploration": ["step 1: require ns", "step 2: test fn"],
-            },
-            solution=";; solution",
-        )
-        example = result.to_training_example()
-        assert example["input"] == ""
-        assert example["instruction"] == "Fix bug in parser"
+def _factory(failing=()):
+    return lambda: _Session(failing)
 
 
-class _FailingLLM:
-    def __init__(self, exc):
-        self.exc = exc
+class TestGenerateTrainingExamples:
+    def test_task_becomes_a_multi_turn_example(self):
+        out = generate_training_examples([{"instruction": "square a number", "feature_used": "defn"}],
+                                         _StepLLM(), session_factory=_factory())
+        assert len(out) == 1
+        ex = out[0].to_training_example()
+        assert ex["instruction"] == "square a number"
+        assert ex["input"] == ""
+        assert ex["conversations"][1]["from"] == "function_call"
+        assert out[0].feature_used == "defn"
 
-    def call(self, *a, **k):
-        raise self.exc
-
-
-class TestLLMFailuresDropExamples:
-    """A failed LLM call drops the task; nothing canned is substituted."""
-
-    def test_failed_calls_produce_no_example(self):
-        from src.codeflow.synthetic.gen_code import generate_training_examples
-        from src.llm.provider import LLMError
-        out = generate_training_examples(
-            [{"instruction": "Fix nil check in handler"}], _FailingLLM(LLMError("503")))
+    def test_failing_end_state_is_dropped(self):
+        out = generate_training_examples([{"instruction": "square"}], _StepLLM(),
+                                         session_factory=_factory(failing=("(sq -2)",)))
         assert out == []
 
-    def test_auth_error_stops_the_run(self):
-        from src.codeflow.synthetic.gen_code import generate_training_examples
-        from src.llm.provider import LLMAuthError
+    def test_blank_instruction_skipped(self):
+        assert generate_training_examples([{"instruction": " "}], _StepLLM(),
+                                          session_factory=_factory()) == []
+
+    def test_max_examples(self):
+        tasks = [{"instruction": f"t{i}"} for i in range(5)]
+        assert len(generate_training_examples(tasks, _StepLLM(), max_examples=2,
+                                              session_factory=_factory())) == 2
+
+    def test_llm_errors_drop_auth_errors_raise(self):
+        class _Fail:
+            def __init__(self, exc):
+                self.exc = exc
+
+            def call(self, *a, **k):
+                raise self.exc
+
+        assert generate_training_examples([{"instruction": "x"}], _Fail(LLMError("503")),
+                                          session_factory=_factory()) == []
         with pytest.raises(LLMAuthError):
-            generate_training_examples(
-                [{"instruction": "Fix nil check in handler"}], _FailingLLM(LLMAuthError("401")))
+            generate_training_examples([{"instruction": "x"}], _Fail(LLMAuthError("401")),
+                                       session_factory=_factory())
 
 
-class TestValidateSolution:
-    def test_valid_solution(self):
-        solution = """;; nREPL session:
-;; eval: (+ 1 2)
-;; result: 3
-;; apply:
-diff --git a/core.clj b/core.clj
---- a/core.clj
-+++ b/core.clj
-@@ -1,1 +1,2 @@
- (ns core)
-+(def x 1)"""
-        assert validate_solution(solution)
-
-    def test_missing_session_header(self):
-        solution = """diff --git a/core.clj b/core.clj
---- a/core.clj
-+++ b/core.clj
-@@ -1,1 +1,2 @@"""
-        assert not validate_solution(solution)
-
-    def test_missing_eval(self):
-        solution = """;; nREPL session:
-;; apply:
-diff --git a/core.clj b/core.clj
---- a/core.clj
-+++ b/core.clj
-@@ -1,1 +1,2 @@"""
-        assert not validate_solution(solution)
-
-    def test_missing_diff(self):
-        solution = """;; nREPL session:
-;; eval: (+ 1 2)
-;; result: 3"""
-        assert not validate_solution(solution)
-
-    def test_minimal_valid(self):
-        solution = ";; nREPL session:\n;; eval: x\n;; result: y\n;; apply:\ndiff --git @@"
-        assert validate_solution(solution)
+class TestAcceptTrace:
+    def test_pass_rate_and_end_state(self):
+        trace = run_live_trace("square", "", _StepLLM(), session_factory=_factory(("(sq 5)",)))
+        assert accept_trace(trace, _factory(), min_pass_rate=0.6) == pytest.approx(2 / 3)
+        assert accept_trace(trace, _factory(), min_pass_rate=0.9) is None
 
 
-class TestCodeGeneration:
-    _SOLUTION = (
-        ";; nREPL session:\n;; eval: (+ 1 2)\n;; result: 3\n"
-        ";; apply:\ndiff --git a/f.clj b/f.clj\n@@ -0,0 +1 @@\n+x\n"
-    )
-
-    def test_code_pass_rejects_truncation(self):
-        llm = _FakeLLM(self._SOLUTION)
-        generate_code("task", {"problem": "p"}, llm)
-        assert llm.reject_truncated is True
-
-    def test_truncated_solution_is_dropped(self):
-        from src.llm.provider import LLMTruncatedError
-
-        class _Truncating(_FakeLLM):
-            def call(self, *a, require_json=False, **k):
-                if require_json:
-                    return json.dumps({"problem": "p"})
-                raise LLMTruncatedError("cut off")
-
-        out = generate_training_examples([{"instruction": "x"}], _Truncating(""))
-        assert out == []
-
-    def test_feature_used_carried_through(self):
-        out = generate_training_examples(
-            [{"instruction": "x", "feature_used": "defmacro"}], _FakeLLM(self._SOLUTION))
-        assert out[0].feature_used == "defmacro"
-
-
-class TestCodePromptConsistency:
-    def test_no_invented_before_state(self):
-        from src.codeflow.synthetic.prompts import CODE_SYSTEM
-        assert "sensible file paths" not in CODE_SYSTEM
-        assert "/dev/null" in CODE_SYSTEM
-
-
-class TestAnalysisErrors:
-    def test_programming_error_not_swallowed(self):
-        class _Broken:
-            def call(self, *a, **k):
-                raise TypeError("bad signature")
-        with pytest.raises(TypeError):
-            generate_analysis("task", _Broken())
-
-    def test_bad_json_returns_none(self):
-        class _Bad:
-            def call(self, *a, **k):
-                return "not json"
-        assert generate_analysis("task", _Bad()) is None
-
-    def test_empty_list_returns_none(self):
-        class _Empty:
-            def call(self, *a, **k):
-                return "[]"
-        assert generate_analysis("task", _Empty()) is None
+def test_codegen_result_jsonl():
+    out = generate_training_examples([{"instruction": "square"}], _StepLLM(),
+                                     session_factory=_factory())
+    assert isinstance(out[0], CodeGenResult)
+    assert json.loads(out[0].to_jsonl()) == out[0].to_training_example()

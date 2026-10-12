@@ -15,8 +15,6 @@ def _load(name: str) -> str:
         return f.read().rstrip()
 
 
-ANALYSIS_SYSTEM = _load("analysis_system")
-CODE_SYSTEM = _load("code_system")
 BREADTH_SYSTEM = _load("breadth_system")
 DEPTH_SYSTEM = _load("depth_system")
 DETAIL_SYSTEM = _load("detail_system")
@@ -24,19 +22,15 @@ EXTRACT_SYSTEM = _load("extract_system")
 QUESTION_SYSTEM = _load("question_system")
 CONSTRUCT_TREE_SYSTEM = _load("construct_tree_system")
 BACKTRANSLATE_SYSTEM = _load("backtranslate_system")
-PLAN_SYSTEM = _load("plan_system")
-WORKFLOW_SYSTEM = _load("workflow_system")
+LIVE_SYSTEM = _load("live_system")
 
 __all__ = [
-    "ANALYSIS_SYSTEM",
     "BACKTRANSLATE_SYSTEM",
     "BREADTH_SYSTEM",
-    "CODE_SYSTEM",
     "CONSTRUCT_TREE_SYSTEM",
     "DEPTH_SYSTEM",
     "DETAIL_SYSTEM",
     "EXTRACT_SYSTEM",
-    "PLAN_SYSTEM",
+    "LIVE_SYSTEM",
     "QUESTION_SYSTEM",
-    "WORKFLOW_SYSTEM",
 ]

@@ -20,16 +20,16 @@ def _args(**kw):
 class TestSelectCoreset:
     def test_mined_data_does_not_wipe_output(self):
         mod = _script()
+        from src.codeflow.synthetic.live_trace import LiveTrace
         synthetic = [
-            CodeGenResult(instruction=f"s{i}", analysis={}, solution=f"o{i}",
+            CodeGenResult(trace=LiveTrace(request=f"s{i}", context="", diff="d"), pass_rate=1.0,
                           feature_used="macros" if i % 2 else "atoms")
             for i in range(4)
         ]
         mined = [{"instruction": f"m{i}", "input": "", "output": "x"} for i in range(4)]
         selected = mod.step_select_coreset(_args(target=5), synthetic, mined)
         assert len(selected) == 5
-        # Records stay plain alpaca examples.
-        assert all(set(r) <= {"system", "instruction", "input", "output"} for r in selected)
+        assert all(r["instruction"] for r in selected)
 
 
 class TestSplitDir:

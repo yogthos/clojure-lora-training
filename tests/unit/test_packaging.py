@@ -27,9 +27,9 @@ def wheel_dir(tmp_path_factory):
 
 def test_wheel_imports_outside_the_checkout(wheel_dir):
     code = ("from src.codeflow.synthetic.gen_code import generate_training_examples\n"
-            "from src.codeflow.synthetic.prompts import CODE_SYSTEM\n"
+            "from src.codeflow.synthetic.prompts import LIVE_SYSTEM\n"
             "from src.codeflow.assembly.validator import validate_example\n"
-            "assert 'nREPL' in CODE_SYSTEM\n")
+            "assert 'nREPL' in LIVE_SYSTEM\n")
     r = subprocess.run([sys.executable, "-I", "-c",
                         f"import sys; sys.path.insert(0, {str(wheel_dir)!r})\n" + code],
                        cwd=wheel_dir, capture_output=True, text=True)
