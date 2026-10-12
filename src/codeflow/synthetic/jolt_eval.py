@@ -264,6 +264,98 @@ def _result(form: str, responses: List[dict]) -> EvalResult:
     )
 
 
+def render_observation(result: EvalResult) -> str:
+    """The text an agent sees after an eval: printed output, then ``=> value``
+    or the nREPL error. Training traces and the inference agent both use this,
+    so the model is trained on exactly what it will be shown."""
+    parts = []
+    if result.stdout:
+        parts.append(result.stdout.rstrip("\n"))
+    parts.append(f"=> {result.value}" if result.ok else result.error)
+    return "\n".join(parts)
+
+
+class JoltSession:
+    """One nREPL session in its own sandboxed ``jolt nrepl-server``.
+
+    Forms evaluate one at a time, so a caller can decide the next form from
+    the last result. A form that runs over ``timeout`` is interrupted and the
+    session carries on. If the interrupt doesn't take, or the server outgrows
+    ``max_rss_mb``, the session is lost and later evals report "not run".
+    """
+
+    def __init__(self, timeout: float = 10.0, jolt_path: str = "jolt",
+                 sandbox: Optional[bool] = None,
+                 max_rss_mb: Optional[int] = DEFAULT_MAX_RSS_MB):
+        self.timeout = timeout
+        self.max_rss_mb = max_rss_mb
+        self.alive = False
+        self._lost_reason = "not run: session lost"
+        if sandbox is None:
+            sandbox = _sandbox_available()
+        if sandbox:
+            _prefetch_deps(jolt_path)
+        self._workdir = tempfile.mkdtemp(prefix="jolt-eval-")
+        self._server: Optional[_JoltServer] = None
+        self._client: Optional[NReplClient] = None
+        try:
+            self._server = _JoltServer(jolt_path, sandbox=sandbox, workdir=self._workdir,
+                                       max_rss_mb=max_rss_mb)
+            self._client = NReplClient("127.0.0.1", self._server.port)
+            self._session = self._client.request({"op": "clone"}, _STARTUP_TIMEOUT)[-1]["new-session"]
+            self._client.request({
+                "op": "eval", "session": self._session,
+                "code": f"(alter-var-root #'*print-length* (constantly {PRINT_LENGTH}))",
+            }, _STARTUP_TIMEOUT)
+            self.alive = True
+        except ConnectionError:
+            self._lost_reason = "not run: nREPL connection lost"
+        except BaseException:
+            self.close()
+            raise
+
+    def eval(self, code: str) -> EvalResult:
+        if not self.alive:
+            return EvalResult(form=code, ok=False, error=self._lost_reason)
+        client, server = self._client, self._server
+        assert client is not None and server is not None
+        try:
+            msg_id = client.send({"op": "eval", "session": self._session, "code": code})
+            try:
+                return _result(code, client.collect(msg_id, self.timeout))
+            except TimeoutError:
+                pass
+            client.send({"op": "interrupt", "session": self._session, "interrupt-id": msg_id})
+            try:
+                client.collect(msg_id, _INTERRUPT_GRACE)
+            except (TimeoutError, ConnectionError):
+                self.alive = False
+                return EvalResult(form=code, ok=False, error=f"timed out after {self.timeout}s")
+            return EvalResult(form=code, ok=False,
+                              error=f"timed out after {self.timeout}s (interrupted)")
+        except ConnectionError:
+            self.alive = False
+            if server.killed_for_memory:
+                return EvalResult(form=code, ok=False,
+                                  error=f"out of memory: server exceeded {self.max_rss_mb}MB")
+            self._lost_reason = "not run: nREPL connection lost"
+            return EvalResult(form=code, ok=False, error=self._lost_reason)
+
+    def close(self) -> None:
+        self.alive = False
+        if self._client is not None:
+            self._client.close()
+        if self._server is not None:
+            self._server.stop()
+        shutil.rmtree(self._workdir, ignore_errors=True)
+
+    def __enter__(self) -> "JoltSession":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+
+
 def eval_forms(
     forms: List[str],
     timeout: float = 10.0,
@@ -271,12 +363,7 @@ def eval_forms(
     sandbox: Optional[bool] = None,
     max_rss_mb: Optional[int] = DEFAULT_MAX_RSS_MB,
 ) -> List[EvalResult]:
-    """Evaluate ``forms`` in order in one fresh nREPL session.
-
-    Each form gets ``timeout`` seconds; a form that runs over is interrupted and
-    reported as failed, and the session carries on with the next form. If the
-    interrupt doesn't take (a form blocked in a foreign call), the server is
-    killed and the remaining forms are reported as not run.
+    """Evaluate ``forms`` in order in one fresh nREPL session (see JoltSession).
 
     ``sandbox`` defaults to on wherever ``sandbox-exec`` exists (macOS). A
     server that grows past ``max_rss_mb`` is killed; that form is reported out
@@ -285,59 +372,6 @@ def eval_forms(
     """
     if not forms:
         return []
-    if sandbox is None:
-        sandbox = _sandbox_available()
-    if sandbox:
-        _prefetch_deps(jolt_path)
-
-    workdir = tempfile.mkdtemp(prefix="jolt-eval-")
-    server = client = None
-    results: List[EvalResult] = []
-    try:
-        server = _JoltServer(jolt_path, sandbox=sandbox, workdir=workdir,
-                             max_rss_mb=max_rss_mb)
-        client = NReplClient("127.0.0.1", server.port)
-        session = client.request({"op": "clone"}, _STARTUP_TIMEOUT)[-1]["new-session"]
-        client.request({
-            "op": "eval", "session": session,
-            "code": f"(alter-var-root #'*print-length* (constantly {PRINT_LENGTH}))",
-        }, _STARTUP_TIMEOUT)
-
-        for i, form in enumerate(forms):
-            msg_id = client.send({"op": "eval", "session": session, "code": form})
-            try:
-                results.append(_result(form, client.collect(msg_id, timeout)))
-                continue
-            except TimeoutError:
-                pass
-            except ConnectionError:
-                if not server.killed_for_memory:
-                    raise
-                results.append(EvalResult(
-                    form=form, ok=False,
-                    error=f"out of memory: server exceeded {max_rss_mb}MB"))
-                results.extend(EvalResult(form=f, ok=False, error="not run: session lost")
-                               for f in forms[i + 1:])
-                break
-            client.send({"op": "interrupt", "session": session, "interrupt-id": msg_id})
-            try:
-                client.collect(msg_id, _INTERRUPT_GRACE)
-            except (TimeoutError, ConnectionError):
-                results.append(EvalResult(form=form, ok=False,
-                                          error=f"timed out after {timeout}s"))
-                results.extend(EvalResult(form=f, ok=False, error="not run: session lost")
-                               for f in forms[i + 1:])
-                break
-            results.append(EvalResult(form=form, ok=False,
-                                      error=f"timed out after {timeout}s (interrupted)"))
-    except ConnectionError:
-        done = len(results)
-        results.extend(EvalResult(form=f, ok=False, error="not run: nREPL connection lost")
-                       for f in forms[done:])
-    finally:
-        if client is not None:
-            client.close()
-        if server is not None:
-            server.stop()
-        shutil.rmtree(workdir, ignore_errors=True)
-    return results
+    with JoltSession(timeout=timeout, jolt_path=jolt_path, sandbox=sandbox,
+                     max_rss_mb=max_rss_mb) as session:
+        return [session.eval(f) for f in forms]

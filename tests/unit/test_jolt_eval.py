@@ -178,3 +178,39 @@ class TestSandbox:
     def test_network_is_denied(self):
         rs = eval_forms(['(java.net.Socket. "1.1.1.1" 80)'], timeout=5.0)
         assert not rs[0].ok
+
+
+class TestRenderObservation:
+    def test_value(self):
+        from src.codeflow.synthetic.jolt_eval import EvalResult, render_observation
+        assert render_observation(EvalResult(form="(+ 1 2)", value="3")) == "=> 3"
+
+    def test_output_then_value(self):
+        from src.codeflow.synthetic.jolt_eval import EvalResult, render_observation
+        r = EvalResult(form="x", value="42", stdout="hi\nthere\n")
+        assert render_observation(r) == "hi\nthere\n=> 42"
+
+    def test_error_after_output(self):
+        from src.codeflow.synthetic.jolt_eval import EvalResult, render_observation
+        r = EvalResult(form="x", stdout="partial\n", ok=False,
+                       error="Execution error (ArithmeticException) at user/eval1 (REPL:1).\nDivide by zero")
+        assert render_observation(r) == ("partial\nExecution error (ArithmeticException) at "
+                                         "user/eval1 (REPL:1).\nDivide by zero")
+
+
+@needs_jolt
+class TestJoltSession:
+    def test_state_persists_between_evals(self):
+        from src.codeflow.synthetic.jolt_eval import JoltSession
+        with JoltSession() as s:
+            assert s.eval("(def x 41)").ok
+            assert s.eval("(inc x)").value == "42"
+
+    def test_eval_after_lost_session_is_not_run(self):
+        from src.codeflow.synthetic.jolt_eval import JoltSession
+        with JoltSession(max_rss_mb=400) as s:
+            s.eval('(def v (atom []))')
+            r = s.eval('(doseq [i (range)] (swap! v conj (str i)))')
+            assert "memory" in r.error
+            assert not s.alive
+            assert s.eval("(+ 1 1)").error == "not run: session lost"
