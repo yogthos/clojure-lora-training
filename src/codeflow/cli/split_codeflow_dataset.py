@@ -19,6 +19,7 @@ from pathlib import Path
 
 
 from src.shared import load_jsonl, write_jsonl
+from src.codeflow.assembly.curriculum import curriculum_order
 from src.codeflow.assembly.sharegpt import to_sharegpt
 from src.codeflow.assembly.splitter import (
     stratified_split,
@@ -39,6 +40,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--val-frac", type=float, default=0.05,
                    help="Fraction held out for validation (default 0.05)")
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--no-curriculum", action="store_true",
+                   help="Shuffle train instead of ordering it easy -> hard")
     return p.parse_args()
 
 
@@ -54,6 +57,10 @@ def main() -> int:
 
     # The split needs the flat fields (repo, instruction); the files LLaMA-
     # Factory reads are sharegpt (configs/dataset_info.codeflow.json).
+    # Easy -> hard, shuffled within phases; the training config disables
+    # LLaMA-Factory's own shuffling so this order holds.
+    if not args.no_curriculum:
+        train = curriculum_order(train, seed=args.seed)
     write_jsonl([to_sharegpt(r) for r in train], args.train_out)
     write_jsonl([to_sharegpt(r) for r in val], args.val_out)
 

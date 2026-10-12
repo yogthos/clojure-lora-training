@@ -37,6 +37,8 @@ eval_dataset: codeflow_val
 template: qwen3_8
 enable_thinking: true         # explicit: responses without <think> would train an
                               #   empty think block (see codeflow_lora_qwen.yaml)
+disable_shuffling: true       # train file is in curriculum order (easy -> hard,
+                              #   assembly/curriculum.py); keep it
 train_on_prompt: false
 cutoff_len: 16384             # matches the assembler's token filter
 neat_packing: false           # GatedDeltaNet state leaks across packed examples

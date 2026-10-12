@@ -66,3 +66,9 @@ def test_keys_are_llamafactory_arguments(config):
                                hparams.GeneratingArguments])
     known = {a.dest for a in parser._actions}
     assert set(config) - known == set()
+
+
+def test_training_order_is_kept(config):
+    # The split writes the training file in curriculum order (easy -> hard);
+    # LLaMA-Factory must not reshuffle it.
+    assert config.get("disable_shuffling") is True

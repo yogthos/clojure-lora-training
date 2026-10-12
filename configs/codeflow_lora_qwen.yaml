@@ -58,6 +58,8 @@ template: qwen3_8
 # included in the loss, teaching the model to skip reasoning. Every assistant
 # turn needs a real <think>...</think> (bead 0sv.19). Serve with thinking on too.
 enable_thinking: true
+disable_shuffling: true       # train file is in curriculum order (easy -> hard,
+                              #   assembly/curriculum.py); keep it
 train_on_prompt: false        # loss on the completion only, not the prompt (default,
                               #   but pinned explicitly — critical for SFT quality)
 cutoff_len: 16384             # the assembler drops anything longer, measured with
