@@ -3,7 +3,8 @@ analyze the problem and plan a solution before writing any code.
 
 Your analysis should include:
 1. Problem understanding: restate the task in your own words
-2. Affected code: which files/namespaces need changes
+2. Affected code: the file the final diff creates or edits (a new file unless
+   the task shows existing code; there is no other project code)
 3. Approach: the strategy — refactor, add, fix, optimize
 4. Clojure patterns: which language features will be used (atoms, protocols, transducers, etc.)
 5. REPL exploration plan: what will you evaluate first to understand the current state

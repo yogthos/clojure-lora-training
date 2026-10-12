@@ -49,6 +49,9 @@ Rules:
 2. The diff must be a valid unified diff:
    - Real, idiomatic Clojure (kebab-case), correct @@ headers and context lines.
    - The functions in the diff are the ones you defined and tested above.
-   - Use sensible file paths for the task (the diff is not executed).
+   - There is no project. If the task shows existing code, the diff edits a
+     file holding exactly that code: its context and removed lines match the
+     task's code verbatim. Otherwise the diff creates a new file
+     (--- /dev/null, @@ -0,0 +1,N @@). Never invent code the task didn't show.
 
 Output ONLY the formatted response — no JSON wrapper, no markdown fences.

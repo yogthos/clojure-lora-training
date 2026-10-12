@@ -36,6 +36,7 @@ class CodeGenResult:
     repo_name: str = ""
     verified: bool = False    # solution's forms were executed in a Jolt nREPL session
     pass_rate: float = 1.0    # fraction of forms that executed cleanly
+    feature_used: str = ""    # taxonomy feature the task came from (for coreset selection)
 
     def to_training_example(self) -> dict:
         """Convert to LLaMA-Factory training format."""
@@ -48,24 +49,14 @@ class CodeGenResult:
         }
 
     def _build_input(self) -> str:
-        """Build the input context for the training example."""
-        parts = ["### Task"]
-        parts.append(self.instruction)
+        """Build the input context for the training example.
 
-        if self.analysis:
-            files = self.analysis.get("files_affected", [])
-            if files:
-                parts.append("\n### Relevant Files")
-                for f in files:
-                    parts.append(f"- {f}")
-
-            repl_plan = self.analysis.get("repl_exploration", [])
-            if repl_plan:
-                parts.append("\n### Suggested REPL Exploration")
-                for step in repl_plan:
-                    parts.append(f"  {step}")
-
-        return "\n".join(parts)
+        Only what a user would supply at inference belongs here. The analysis
+        (affected files, REPL plan) is generation scaffolding that leaks the
+        answer's plan, and the instruction is already its own field. Synthetic
+        tasks are self-contained, so there is no project context to add.
+        """
+        return ""
 
     def to_jsonl(self) -> str:
         """Serialize as a single JSONL line."""
@@ -145,6 +136,8 @@ def generate_code(
             temperature=0.5,
             max_tokens=8192,
             require_json=False,  # We want raw text output
+            # A cut-off solution loses its diff or ends mid-hunk: drop it.
+            reject_truncated=True,
         )
         if isinstance(result, dict):
             return result.get("text", result.get("content", str(result)))
@@ -220,6 +213,7 @@ def generate_training_examples(
             repo_name="synthetic",
             verified=verified,
             pass_rate=pass_rate,
+            feature_used=task.get("feature_used", ""),
         ))
 
     return results

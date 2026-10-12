@@ -19,7 +19,8 @@ class _FakeLLM:
         self.solution = solution
 
     def call(self, system_prompt, user_prompt, temperature=None,
-             max_tokens=None, require_json=False):
+             max_tokens=None, require_json=False, reject_truncated=False):
+        self.reject_truncated = reject_truncated
         if require_json:
             return json.dumps({"files_affected": ["src/core.clj"],
                                "repl_exploration": []})
@@ -103,7 +104,10 @@ diff --git a/src/core.clj b/src/core.clj
         parsed = json.loads(line)
         assert parsed["instruction"] == "Add validation"
 
-    def test_input_context(self):
+    def test_input_holds_nothing_unavailable_at_inference(self):
+        # The analysis (files, REPL plan) is the model's own scratch work; at
+        # inference the user supplies only the instruction, so neither the
+        # plan nor a copy of the instruction belongs in the input.
         result = CodeGenResult(
             instruction="Fix bug in parser",
             analysis={
@@ -112,11 +116,9 @@ diff --git a/src/core.clj b/src/core.clj
             },
             solution=";; solution",
         )
-        inp = result._build_input()
-        assert "Fix bug in parser" in inp
-        assert "src/parser.clj" in inp
-        assert "src/utils.clj" in inp
-        assert "step 1: require ns" in inp
+        example = result.to_training_example()
+        assert example["input"] == ""
+        assert example["instruction"] == "Fix bug in parser"
 
 
 class _FailingLLM:
@@ -184,3 +186,39 @@ diff --git a/core.clj b/core.clj
     def test_minimal_valid(self):
         solution = ";; nREPL session:\n;; eval: x\n;; result: y\n;; apply:\ndiff --git @@"
         assert validate_solution(solution)
+
+
+class TestCodeGeneration:
+    _SOLUTION = (
+        ";; nREPL session:\n;; eval: (+ 1 2)\n;; result: 3\n"
+        ";; apply:\ndiff --git a/f.clj b/f.clj\n@@ -0,0 +1 @@\n+x\n"
+    )
+
+    def test_code_pass_rejects_truncation(self):
+        llm = _FakeLLM(self._SOLUTION)
+        generate_code("task", {"problem": "p"}, llm)
+        assert llm.reject_truncated is True
+
+    def test_truncated_solution_is_dropped(self):
+        from src.llm.provider import LLMTruncatedError
+
+        class _Truncating(_FakeLLM):
+            def call(self, *a, require_json=False, **k):
+                if require_json:
+                    return json.dumps({"problem": "p"})
+                raise LLMTruncatedError("cut off")
+
+        out = generate_training_examples([{"instruction": "x"}], _Truncating(""))
+        assert out == []
+
+    def test_feature_used_carried_through(self):
+        out = generate_training_examples(
+            [{"instruction": "x", "feature_used": "defmacro"}], _FakeLLM(self._SOLUTION))
+        assert out[0].feature_used == "defmacro"
+
+
+class TestCodePromptConsistency:
+    def test_no_invented_before_state(self):
+        from src.codeflow.synthetic.prompts import CODE_SYSTEM
+        assert "sensible file paths" not in CODE_SYSTEM
+        assert "/dev/null" in CODE_SYSTEM
