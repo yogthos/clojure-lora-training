@@ -208,3 +208,28 @@ class TestConcurrentGeneration:
         # Must not raise; all samples drop to None.
         out = generate_workflows_concurrent(prompts, _BoomLLM(), max_workers=3)
         assert out == []
+
+
+class TestLLMFailures:
+    def test_llm_error_drops_sample(self):
+        from src.llm.provider import LLMError
+
+        class _Fail(_FakeLLM):
+            def call(self, *a, require_json=False, **k):
+                if require_json:
+                    return json.dumps({"goal": "g", "steps": [{"name": "s"}]})
+                raise LLMError("server busy")
+
+        assert generate_one(_PROMPT, _Fail()) is None
+
+    def test_auth_error_stops_serial_and_concurrent_runs(self):
+        from src.llm.provider import LLMAuthError
+
+        class _NoAuth(_FakeLLM):
+            def call(self, *a, **k):
+                raise LLMAuthError("401")
+
+        with pytest.raises(LLMAuthError):
+            generate_workflows([_prompt(0)], _NoAuth())
+        with pytest.raises(LLMAuthError):
+            generate_workflows_concurrent([_prompt(i) for i in range(4)], _NoAuth(), max_workers=2)

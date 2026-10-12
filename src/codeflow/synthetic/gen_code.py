@@ -17,11 +17,11 @@ producing code blindly.
 """
 
 import json
-import random
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
 
-from ...llm.provider import LLMProvider
+from dataclasses import dataclass
+from typing import List, Optional
+
+from ...llm.provider import LLMAuthError, LLMError, LLMProvider
 
 
 # System prompt for the analysis pass
@@ -76,7 +76,7 @@ class CodeGenResult:
 def generate_analysis(
     instruction: str,
     llm: LLMProvider,
-) -> dict:
+) -> Optional[dict]:
     """Generate analysis for a coding task.
 
     The analysis provides context that will be used in the code
@@ -87,7 +87,8 @@ def generate_analysis(
         llm: LLM provider.
 
     Returns:
-        Dict with analysis fields.
+        Dict with analysis fields, or None if the call failed or its output
+        wasn't a JSON object.
     """
     prompt = f"Coding task:\n\n{instruction}\n\nAnalyze this task and plan the implementation."
 
@@ -102,30 +103,11 @@ def generate_analysis(
         analysis = json.loads(result) if isinstance(result, str) else result
         if isinstance(analysis, list):
             analysis = analysis[0] if analysis else {}
-        return analysis if isinstance(analysis, dict) else {}
-    except Exception:
-        return _fallback_analysis(instruction)
-
-
-def _fallback_analysis(instruction: str) -> dict:
-    """Generate a basic fallback analysis without LLM."""
-    return {
-        "problem": instruction,
-        "files_affected": ["src/core.clj"],
-        "approach": "refactor",
-        "clojure_patterns": ["pure functions", "data transformation"],
-        "repl_exploration": [
-            "Evaluate current functions to understand behavior",
-            "Test edge cases with sample inputs",
-            "Verify refactored version produces same outputs",
-        ],
-        "incremental_plan": [
-            {"step": "Inspect current code", "eval": "(require '[my.ns] :reload)", "expected": "nil"},
-            {"step": "Test existing behavior", "eval": "(my.ns/current-fn test-input)", "expected": "current output"},
-            {"step": "Implement new version", "eval": "(defn new-fn [x] ...)", "expected": "#'user/new-fn"},
-            {"step": "Verify equivalence", "eval": "(= (my.ns/current-fn x) (new-fn x))", "expected": "true"},
-        ],
-    }
+        return analysis if isinstance(analysis, dict) else None
+    except LLMAuthError:
+        raise
+    except (LLMError, ValueError, TypeError, IndexError):
+        return None
 
 
 def generate_code(
@@ -168,50 +150,10 @@ def generate_code(
         if isinstance(result, dict):
             return result.get("text", result.get("content", str(result)))
         return str(result)
-    except Exception:
-        return _fallback_code(instruction, analysis)
-
-
-def _fallback_code(instruction: str, analysis: dict) -> str:
-    """Generate a minimal REPL solution without LLM for fallback."""
-    files = analysis.get("files_affected", ["src/core.clj"])
-    main_file = files[0] if files else "src/core.clj"
-
-    return f"""\
-;; nREPL session:
-;; Exploring and implementing changes interactively.
-
-;; eval: (require '[clojure.repl :refer :all])
-;; result: nil
-
-;; eval: (dir (find-ns '{files[0].replace(".clj", "").replace("/", ".") if files else "user"})
-;; result: ;; Inspecting current namespace to understand existing code
-
-;; eval: (defn improved-fn [data]
-;;        (->> data
-;;             (filter some?)
-;;             (map (fn [x] (update x :status keyword)))
-;;             (group-by :status)))
-;; result: #'user/improved-fn
-
-;; eval: (improved-fn (list {{:status "active" :id 1}} {{:status nil :id 2}} {{:status "active" :id 3}}))
-;; result: {{:active [{{:status :active :id 1}} {{:status :active :id 3}}]}}
-
-;; apply:
-diff --git a/{main_file} b/{main_file}
---- a/{main_file}
-+++ b/{main_file}
-@@ -10,6 +10,8 @@
- (defn existing-fn [data]
-   (do-something data))
-
-+(defn improved-fn [data]
-+  (->> data (filter some?) (map #(update % :status keyword)) (group-by :status)))
-+
- (comment
-   ;; Test with sample data
--  (existing-fn sample-data))
-+  (improved-fn sample-data))"""
+    except LLMAuthError:
+        raise
+    except LLMError:
+        return ""
 
 
 def generate_training_examples(
@@ -248,11 +190,16 @@ def generate_training_examples(
         if not instruction:
             continue
 
-        # Pass 1: analysis
+        # Pass 1: analysis. A failed call drops the task — nothing canned is
+        # substituted, since a generic plan or trace isn't about this task.
         analysis = generate_analysis(instruction, llm)
+        if analysis is None:
+            continue
 
         # Pass 2: code with REPL
         solution = generate_code(instruction, analysis, llm)
+        if not solution.strip():
+            continue
 
         verified = False
         pass_rate = 1.0

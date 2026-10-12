@@ -12,6 +12,8 @@ from .provider import (
     LLMRateLimitError,
     LLMTimeoutError,
     LLMResponseError,
+    LLMTransientError,
+    LLMAuthError,
     register_provider
 )
 
@@ -121,6 +123,10 @@ class DeepSeekProvider(LLMProvider):
                         error_msg = f"{error_msg} - {error_data['error'].get('message', '')}"
                 except Exception:
                     error_msg = f"{error_msg} - {response.text[:200]}"
+                if response.status_code in (401, 402, 403):
+                    raise LLMAuthError(error_msg)
+                if response.status_code >= 500:
+                    raise LLMTransientError(error_msg)  # e.g. 503 "server busy"
                 raise LLMError(error_msg)
 
             # Parse response
@@ -135,7 +141,7 @@ class DeepSeekProvider(LLMProvider):
             choice = data["choices"][0]
             content = choice.get("message", {}).get("content", "")
             if not content:
-                raise LLMResponseError("Empty content in DeepSeek response")
+                raise LLMTransientError("Empty content in DeepSeek response")
 
             # Extract usage info
             usage = data.get("usage", {})
@@ -151,7 +157,7 @@ class DeepSeekProvider(LLMProvider):
         except requests.exceptions.Timeout:
             raise LLMTimeoutError(f"DeepSeek request timed out after {self.config.timeout}s")
         except requests.exceptions.ConnectionError as e:
-            raise LLMError(f"DeepSeek connection error: {e}")
+            raise LLMTransientError(f"DeepSeek connection error: {e}")
         except requests.exceptions.RequestException as e:
             raise LLMError(f"DeepSeek request error: {e}")
 

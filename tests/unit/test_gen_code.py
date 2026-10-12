@@ -9,8 +9,6 @@ from src.codeflow.synthetic.gen_code import (
     generate_code,
     generate_training_examples,
     validate_solution,
-    _fallback_analysis,
-    _fallback_code,
 )
 
 
@@ -121,38 +119,30 @@ diff --git a/src/core.clj b/src/core.clj
         assert "step 1: require ns" in inp
 
 
-class TestFallbackAnalysis:
-    def test_returns_valid_structure(self):
-        analysis = _fallback_analysis("Fix nil check in handler")
-        assert "problem" in analysis
-        assert "files_affected" in analysis
-        assert "approach" in analysis
-        assert "clojure_patterns" in analysis
-        assert "repl_exploration" in analysis
-        assert "incremental_plan" in analysis
+class _FailingLLM:
+    def __init__(self, exc):
+        self.exc = exc
 
-    def test_plan_has_steps(self):
-        analysis = _fallback_analysis("Refactor middleware")
-        plan = analysis["incremental_plan"]
-        assert len(plan) >= 3
-        assert all("step" in s and "eval" in s for s in plan)
+    def call(self, *a, **k):
+        raise self.exc
 
 
-class TestFallbackCode:
-    def test_returns_repl_format(self):
-        analysis = _fallback_analysis("Fix nil check")
-        code = _fallback_code("Fix nil check", analysis)
-        assert ";; nREPL session:" in code
-        assert ";; eval:" in code
-        assert ";; result:" in code
-        assert ";; apply:" in code
-        assert "diff --git" in code
-        assert "@@" in code
+class TestLLMFailuresDropExamples:
+    """A failed LLM call drops the task; nothing canned is substituted."""
 
-    def test_code_is_valid(self):
-        analysis = _fallback_analysis("Add feature")
-        code = _fallback_code("Add feature", analysis)
-        assert validate_solution(code)
+    def test_failed_calls_produce_no_example(self):
+        from src.codeflow.synthetic.gen_code import generate_training_examples
+        from src.llm.provider import LLMError
+        out = generate_training_examples(
+            [{"instruction": "Fix nil check in handler"}], _FailingLLM(LLMError("503")))
+        assert out == []
+
+    def test_auth_error_stops_the_run(self):
+        from src.codeflow.synthetic.gen_code import generate_training_examples
+        from src.llm.provider import LLMAuthError
+        with pytest.raises(LLMAuthError):
+            generate_training_examples(
+                [{"instruction": "Fix nil check in handler"}], _FailingLLM(LLMAuthError("401")))
 
 
 class TestValidateSolution:

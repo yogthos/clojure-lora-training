@@ -11,7 +11,7 @@ import re
 from dataclasses import dataclass
 from typing import List, Optional
 
-from ...llm.provider import LLMProvider
+from ...llm.provider import LLMAuthError, LLMError, LLMProvider
 from .prompts import BACKTRANSLATE_SYSTEM as _BACKTRANSLATE_SYSTEM
 
 # Commit-message noise that doesn't represent a user-facing development goal.
@@ -70,8 +70,10 @@ def backtranslate_prompt(
         data = json.loads(raw) if isinstance(raw, str) else raw
         if isinstance(data, list):
             data = data[0] if data else {}
-    except (ValueError, TypeError, KeyError, IndexError):
-        return None
+    except LLMAuthError:
+        raise
+    except (ValueError, TypeError, KeyError, IndexError, LLMError):
+        return None  # unparseable output, or the call failed after retries
 
     if not isinstance(data, dict):
         return None

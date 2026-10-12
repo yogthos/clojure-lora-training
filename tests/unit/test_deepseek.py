@@ -137,3 +137,60 @@ class TestFinishReason:
         p = self._provider()
         with patch("src.llm.deepseek.requests.post", return_value=self._reply("stop")):
             assert p.call("s", "u", reject_truncated=True) == "partial"
+
+
+class TestErrorClassification:
+    """Transient failures retry; auth/billing failures stop the run at once."""
+
+    def _provider(self):
+        return TestFinishReason()._provider()
+
+    def _status(self, code, body=None):
+        resp = MagicMock()
+        resp.status_code = code
+        resp.json.return_value = body or {"error": {"message": "x"}}
+        resp.text = "x"
+        return resp
+
+    def _ok(self):
+        return TestFinishReason()._reply("stop")
+
+    def test_server_error_is_retried(self):
+        p = self._provider()
+        with patch("src.llm.deepseek.requests.post",
+                   side_effect=[self._status(503), self._ok()]) as post:
+            assert p.call("s", "u") == "partial"
+        assert post.call_count == 2
+
+    def test_connection_error_is_retried(self):
+        import requests
+        p = self._provider()
+        with patch("src.llm.deepseek.requests.post",
+                   side_effect=[requests.exceptions.ConnectionError("reset"), self._ok()]):
+            assert p.call("s", "u") == "partial"
+
+    def test_empty_content_is_retried(self):
+        p = self._provider()
+        empty = MagicMock(status_code=200)
+        empty.json.return_value = {"choices": [{"message": {"content": ""},
+                                                "finish_reason": "stop"}]}
+        with patch("src.llm.deepseek.requests.post", side_effect=[empty, self._ok()]):
+            assert p.call("s", "u") == "partial"
+
+    @pytest.mark.parametrize("code", [401, 402, 403])
+    def test_auth_and_billing_errors_fail_fast(self, code):
+        from src.llm.provider import LLMAuthError
+        p = self._provider()
+        with patch("src.llm.deepseek.requests.post", return_value=self._status(code)) as post:
+            with pytest.raises(LLMAuthError):
+                p.call("s", "u")
+        assert post.call_count == 1
+
+    def test_bad_request_is_not_retried(self):
+        from src.llm.provider import LLMError, LLMAuthError
+        p = self._provider()
+        with patch("src.llm.deepseek.requests.post", return_value=self._status(400)) as post:
+            with pytest.raises(LLMError) as ei:
+                p.call("s", "u")
+        assert not isinstance(ei.value, LLMAuthError)
+        assert post.call_count == 1

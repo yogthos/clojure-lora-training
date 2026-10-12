@@ -1,5 +1,6 @@
 """Abstract base class for LLM providers."""
 
+import threading
 import json
 import time
 from abc import ABC, abstractmethod
@@ -10,6 +11,9 @@ from ..config import LLMProviderConfig, LLMConfig
 from ..utils.logging import get_logger, log_llm_call
 
 logger = get_logger(__name__)
+
+
+_usage_lock = threading.Lock()
 
 
 class LLMError(Exception):
@@ -29,6 +33,18 @@ class LLMTimeoutError(LLMError):
 
 class LLMResponseError(LLMError):
     """Raised when response is malformed or invalid."""
+    pass
+
+
+class LLMTransientError(LLMError):
+    """A failure worth retrying: 5xx, dropped connection, empty reply."""
+    pass
+
+
+class LLMAuthError(LLMError):
+    """Bad key, no credit, or forbidden (401/402/403). Never retried, and
+    callers that skip failed items re-raise it: every later call would fail
+    the same way, so the run must stop rather than finish with nothing kept."""
     pass
 
 
@@ -242,9 +258,10 @@ class LLMProvider(ABC):
                 response = self._call_api(messages, temperature, max_tokens, require_json, logit_bias=logit_bias)
 
                 # Track usage
-                self._total_input_tokens += response.input_tokens
-                self._total_output_tokens += response.output_tokens
-                self._total_calls += 1
+                with _usage_lock:  # providers are shared across worker threads
+                    self._total_input_tokens += response.input_tokens
+                    self._total_output_tokens += response.output_tokens
+                    self._total_calls += 1
 
                 duration_ms = int((time.time() - start_time) * 1000)
                 log_llm_call(
@@ -268,11 +285,11 @@ class LLMProvider(ABC):
                 )
                 time.sleep(delay)
 
-            except LLMTimeoutError as e:
+            except (LLMTimeoutError, LLMTransientError) as e:
                 last_error = e
                 delay = min(base_delay * (2 ** attempt), max_delay)
                 logger.warning(
-                    f"Request timeout, retrying in {delay}s (attempt {attempt + 1}/{max_retries})",
+                    f"{e}; retrying in {delay}s (attempt {attempt + 1}/{max_retries})",
                     extra_data={"provider": self.provider_name, "delay": delay}
                 )
                 time.sleep(delay)

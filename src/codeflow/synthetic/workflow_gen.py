@@ -12,7 +12,7 @@ import re
 from dataclasses import dataclass
 from typing import Callable, List, Optional
 
-from ...llm.provider import LLMProvider
+from ...llm.provider import LLMAuthError, LLMError, LLMProvider
 from ..diffs import apply_section_errors, check_patch, extract_diff, fix_hunk_headers
 from ...shared import _WORKFLOW_SYSTEM_PROMPT
 from .prompt_mining import MinedPrompt
@@ -72,7 +72,9 @@ def generate_plan(prompt: MinedPrompt, llm: LLMProvider) -> dict:
         plan = json.loads(raw) if isinstance(raw, str) else raw
         if isinstance(plan, list):
             plan = plan[0] if plan else {}
-    except (ValueError, TypeError, IndexError):
+    except (ValueError, TypeError, IndexError, LLMError) as e:
+        if isinstance(e, LLMAuthError):
+            raise
         return _fallback_plan(prompt)
 
     if not isinstance(plan, dict) or not plan.get("steps"):
@@ -108,8 +110,10 @@ def generate_workflow(
         if isinstance(result, dict):
             return result.get("text", result.get("content", str(result)))
         return str(result)
-    except Exception:
-        return ""
+    except LLMAuthError:
+        raise
+    except LLMError:
+        return ""  # retries exhausted or truncated: drop this sample
 
 
 # A short unit (8-200 chars) repeated back-to-back 10+ times: a degenerate
@@ -236,6 +240,10 @@ def generate_workflows_concurrent(
         for done, fut in enumerate(as_completed(futures), 1):
             try:
                 r = fut.result()
+            except LLMAuthError:
+                for f in futures:
+                    f.cancel()
+                raise
             except Exception:
                 r = None
             if r is not None:
