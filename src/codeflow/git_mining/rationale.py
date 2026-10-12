@@ -9,7 +9,7 @@ to the change as given (a diff, a patch, "the change above") is rejected.
 
 import json
 import re
-from typing import Optional
+from typing import List, Optional
 
 from ...llm.provider import LLMAuthError, LLMError, LLMProvider
 from ..synthetic.live_trace import think
@@ -60,3 +60,41 @@ def write_rationale(record: dict, llm: LLMProvider) -> Optional[str]:
 def add_reasoning(record: dict, rationale: str) -> dict:
     """A copy of ``record`` whose output opens with the reasoning."""
     return dict(record, output=think(rationale) + record["output"])
+
+
+def _gpt_turns(record: dict) -> List[int]:
+    return [i for i, t in enumerate(record.get("conversations") or []) if t["from"] == "gpt"]
+
+
+def needs_reasoning(record: dict) -> bool:
+    """A transition, or any turn of a history chain, without reasoning yet."""
+    from ..assembly.validator import split_think
+
+    conv = record.get("conversations")
+    if conv:
+        return any(split_think(conv[i]["value"]) is None for i in _gpt_turns(record))
+    return split_think(record.get("output", "")) is None
+
+
+def reason_record(record: dict, llm: LLMProvider) -> Optional[dict]:
+    """``record`` with reasoning on every assistant turn, or None if any turn
+    can't get usable reasoning. A history chain's turns are each reasoned
+    from their own request and code (the human turn is instruction, newline,
+    input)."""
+    from ..assembly.validator import split_think
+
+    conv = record.get("conversations")
+    if not conv:
+        text = write_rationale(record, llm)
+        return add_reasoning(record, text) if text else None
+    conv = [dict(t) for t in conv]
+    for i in _gpt_turns(record):
+        if split_think(conv[i]["value"]) is not None:
+            continue
+        instruction, _, inp = conv[i - 1]["value"].partition("\n")
+        text = write_rationale({"instruction": instruction, "input": inp,
+                                "output": conv[i]["value"]}, llm)
+        if not text:
+            return None
+        conv[i]["value"] = think(text) + conv[i]["value"]
+    return dict(record, conversations=conv, output=conv[_gpt_turns(record)[0]]["value"])

@@ -39,3 +39,27 @@ class TestCloneTargets:
     def test_ssh_url(self):
         mod = _script()
         assert mod.clone_target("git@github.com:owner/repo.git", "/tmp/c").name == "owner__repo"
+
+
+def test_cli_writes_chains(tmp_path, monkeypatch):
+    import json
+    import subprocess
+    import sys
+
+    def git(*a):
+        subprocess.run(["git", "-C", str(tmp_path / "repo"), *a], check=True, capture_output=True)
+    (tmp_path / "repo").mkdir()
+    git("init", "-q", "-b", "main"); git("config", "user.email", "t@t"); git("config", "user.name", "t")
+    src = tmp_path / "repo" / "src" / "a.clj"
+    src.parent.mkdir(parents=True)
+    for i, msg in enumerate(["initial namespace with a function", "make f return one more",
+                             "make f return two more", "make f return three more"]):
+        src.write_text(f"(ns a)\n\n(defn f [] {i})\n")
+        git("add", "-A"); git("commit", "-q", "-m", msg)
+    out = tmp_path / "out.jsonl"
+    monkeypatch.setattr(sys, "argv", ["mine", "--repo", str(tmp_path / "repo"), "-o", str(out),
+                                      "--lifecycle-window", "none", "--triplet-span", "1",
+                                      "--chain-max", "4", "--stats"])
+    _script().main()
+    recs = [json.loads(l) for l in out.read_text().splitlines()]
+    assert len(recs) == 1 and len(recs[0]["conversations"]) == 8

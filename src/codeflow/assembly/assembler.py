@@ -187,6 +187,9 @@ def filter_trivial_diffs(
     kept = []
     for r in records:
         out = r.get("output", "")
+        if r.get("conversations") and r.get("source") != "synthetic":
+            # A history chain: judged on all its turns together.
+            out = "\n".join(t["value"] for t in r["conversations"] if t["from"] == "gpt")
         if r.get("source") == "synthetic" or "diff --git" not in out:
             kept.append(r)
         elif count_changed_lines(out) >= min_changed_lines:

@@ -33,6 +33,10 @@ _EMPTY_TREE_SHA = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
 _CLOJURE_PATHSPECS = ["*.clj", "*.cljs", "*.cljc", "*.edn"]
 
+# A chain's turns, human and assistant, stay within this many characters
+# (~11k tokens) so it fits the training cutoff with its reasoning added.
+CHAIN_CHARS = 40000
+
 # Changed files are shown whole, smallest first, while they fit in this many
 # characters (~4.5k tokens); the rest show only the changed forms.
 WHOLE_FILE_BUDGET = 16000
@@ -48,6 +52,10 @@ class MinedExample:
     changed_files: List[str] = field(default_factory=list)
     history: List[HistoryEntry] = field(default_factory=list)
     related: Dict[str, str] = field(default_factory=dict)   # path -> forms using the change
+    # Where the arc sits in history, for linking arcs into chains.
+    base_ref: str = field(default="", repr=False)
+    head_ref: str = field(default="", repr=False)
+    old_paths: List[str] = field(default_factory=list, repr=False)   # changed files at base_ref
 
     def to_dict(self) -> dict:
         """Convert to LLaMA-Factory compatible format.
@@ -65,16 +73,101 @@ class MinedExample:
             "repo": self.repo_name,
         }
 
-    def input_text(self) -> str:
+    def input_text(self, with_history: bool = True) -> str:
         """Recent history, then the code being changed, then the code that
         uses it."""
         code = _format_changed_regions(self.before, self.diff, whole_budget=WHOLE_FILE_BUDGET)
-        parts = [format_history(self.history), code, format_related(self.related)]
+        history = format_history(self.history) if with_history else ""
+        parts = [history, code, format_related(self.related)]
         return "\n\n".join(p for p in parts if p)
+
+    def human_turn(self, with_history: bool = True) -> str:
+        """The request as the model sees it: instruction, then input (how
+        LLaMA-Factory joins an alpaca record's fields)."""
+        return f"{self.instruction}\n{self.input_text(with_history)}"
 
     def to_jsonl(self) -> str:
         """Serialize as a single JSONL line."""
         return json.dumps(self.to_dict(), ensure_ascii=False)
+
+
+@dataclass
+class MinedChain:
+    """Consecutive arcs on the same files, as one conversation: each request
+    is shown with the code as the previous change left it, so the model
+    learns to build each change on the one before. Later turns leave out the
+    commit history, which the conversation itself now carries."""
+    repo_name: str
+    turns: List[MinedExample]
+
+    def conversations(self) -> List[dict]:
+        conv = []
+        for i, t in enumerate(self.turns):
+            conv.append({"from": "human", "value": t.human_turn(with_history=i == 0)})
+            conv.append({"from": "gpt", "value": t.diff})
+        return conv
+
+    def to_dict(self) -> dict:
+        first = self.turns[0]
+        conv = self.conversations()
+        # The flat fields mirror the first turn: dedup and the grouped split
+        # key on them.
+        return {
+            "system": _TRANSITION_SYSTEM_PROMPT,
+            "instruction": first.instruction,
+            "input": first.input_text(),
+            "output": conv[1]["value"],
+            "conversations": conv,
+            "repo": self.repo_name,
+        }
+
+    def to_jsonl(self) -> str:
+        return json.dumps(self.to_dict(), ensure_ascii=False)
+
+
+def _turn_chars(ex: MinedExample, first: bool) -> int:
+    return len(ex.human_turn(with_history=first)) + len(ex.diff)
+
+
+def _continues(repo_path: str, prev: MinedExample, nxt: MinedExample) -> bool:
+    """``nxt`` changes a file ``prev`` changed, and finds every file it
+    changes exactly as ``prev`` left it (nothing unshown happened between)."""
+    if not set(prev.changed_files) & set(nxt.old_paths):
+        return False
+    if prev.head_ref == nxt.base_ref:
+        return True
+    result = subprocess.run(
+        [*_GIT, "-C", repo_path, "diff", "--quiet", prev.head_ref, nxt.base_ref,
+         "--", *[_literal(p) for p in nxt.old_paths]],
+        capture_output=True)
+    return result.returncode == 0
+
+
+def link_chains(repo_path: str, examples: List[MinedExample], chain_max: int,
+                chain_chars: int) -> List["MinedExample | MinedChain"]:
+    """Group consecutive continuing arcs into chains of up to ``chain_max``
+    turns and ``chain_chars`` characters; an arc that links to nothing stays
+    a single transition."""
+    out: list = []
+    run: List[MinedExample] = []
+    size = 0
+
+    def flush():
+        if len(run) == 1:
+            out.append(run[0])
+        elif run:
+            out.append(MinedChain(run[0].repo_name, list(run)))
+
+    for ex in examples:
+        if (run and len(run) < chain_max and _continues(repo_path, run[-1], ex)
+                and size + _turn_chars(ex, False) <= chain_chars):
+            run.append(ex)
+            size += _turn_chars(ex, False)
+        else:
+            flush()
+            run, size = [ex], _turn_chars(ex, True)
+    flush()
+    return out
 
 
 def _format_file_tree(files: Dict[str, str]) -> str:
@@ -384,7 +477,9 @@ def mine_repository(
     since: str | None = None,
     lifecycle_window: Optional[tuple[float, float]] = (0.4, 0.8),
     triplet_span: int = 3,
-) -> List[MinedExample]:
+    chain_max: int = 1,
+    chain_chars: int = CHAIN_CHARS,
+) -> List["MinedExample | MinedChain"]:
     """Mine a Clojure repository for code-flow (R_old, P, R_new) triplets.
 
     Follows the IQuest-Coder git-history recipe (Tech Report §3.1):
@@ -397,7 +492,8 @@ def mine_repository(
        instruction (endpoint quality filtering).
 
     triplet_span=1 reproduces single-commit granularity. lifecycle_window=None
-    walks the full history (capped by max_commits).
+    walks the full history (capped by max_commits). chain_max > 1 links
+    consecutive arcs on the same files into MinedChains (see link_chains).
     """
     if not repo_name:
         repo_name = Path(repo_path).name
@@ -486,6 +582,12 @@ def mine_repository(
             changed_files=[df.path for df in parsed],
             history=history,
             related=related,
+            base_ref=base_ref,
+            head_ref=head_ref,
+            old_paths=[df.old_path if df.change_type == "renamed" and df.old_path else df.path
+                       for df in parsed if df.change_type != "added"],
         ))
 
+    if chain_max > 1:
+        return link_chains(repo_path, examples, chain_max, chain_chars)
     return examples

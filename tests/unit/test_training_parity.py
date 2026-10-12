@@ -68,3 +68,19 @@ def test_transition_matches_chat_template(tok_and_template):
     text, trained = _render(tok, template, rec)
     assert text == tok.apply_chat_template(record_messages(rec), tokenize=False)
     assert trained == ["<think>\nr\n</think>\n\ndiff --git a/a b/a\n+x<|im_end|>\n"]
+
+
+def test_history_chain_matches_chat_template(tok_and_template):
+    # Every turn's reasoning is trained (qwen3_8 preserves past thinking), and
+    # each turn's request and code are prompt.
+    tok, template = tok_and_template
+    conv = [{"from": "human", "value": "fix x\n### a.clj\n(ns a)"},
+            {"from": "gpt", "value": "<think>\nfirst\n</think>\n\ndiff --git a/a b/a\n+x\n"},
+            {"from": "human", "value": "fix y\n### a.clj\n(ns a)\nx"},
+            {"from": "gpt", "value": "<think>\nsecond\n</think>\n\ndiff --git a/a b/a\n+y\n"}]
+    rec = {"system": "SYS", "instruction": "fix x", "input": "", "output": conv[1]["value"],
+           "conversations": conv}
+    text, trained = _render(tok, template, rec)
+    assert text == tok.apply_chat_template(record_messages(rec), tokenize=False)
+    assert trained == ["<think>\nfirst\n</think>\n\ndiff --git a/a b/a\n+x<|im_end|>\n",
+                       "<think>\nsecond\n</think>\n\ndiff --git a/a b/a\n+y<|im_end|>\n"]

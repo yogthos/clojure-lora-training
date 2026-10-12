@@ -39,7 +39,7 @@ from typing import List, Optional
 from collections import Counter
 
 
-from src.codeflow.git_mining.miner import mine_repository, MinedExample
+from src.codeflow.git_mining.miner import CHAIN_CHARS, MinedChain, MinedExample, mine_repository
 from src.codeflow.git_mining.pattern_classifier import DiffClassification, classify_diff
 
 # --pattern choice -> DiffClassification field.
@@ -95,6 +95,15 @@ def parse_args() -> argparse.Namespace:
         "--lifecycle-window", type=str, default="0.4,0.8",
         help="Percentile band of project life to mine, e.g. '0.4,0.8' "
              "(IQuest mature phase). Pass 'none' to mine full history.",
+    )
+    parser.add_argument(
+        "--chain-max", type=int, default=4,
+        help="Link up to this many consecutive arcs on the same files into one "
+             "multi-turn history chain (default: 4; 1 = independent arcs)",
+    )
+    parser.add_argument(
+        "--chain-chars", type=int, default=CHAIN_CHARS,
+        help=f"Character budget for a chain's turns (default: {CHAIN_CHARS})",
     )
     parser.add_argument(
         "--pattern", type=str, action="append", dest="patterns",
@@ -189,7 +198,7 @@ def main():
         lifecycle_window = (lo, hi)
 
     clone_dir = args.clone_dir or tempfile.mkdtemp(prefix="clj-mine-")
-    all_examples: List[MinedExample] = []
+    all_examples: List["MinedExample | MinedChain"] = []
     stats = Counter()
 
     for repo in repos:
@@ -209,6 +218,8 @@ def main():
                 since=args.since,
                 lifecycle_window=lifecycle_window,
                 triplet_span=args.triplet_span,
+                chain_max=args.chain_max,
+                chain_chars=args.chain_chars,
             )
         except Exception as e:
             print(f"Error mining {repo_name}: {e}", file=sys.stderr)
@@ -219,16 +230,20 @@ def main():
         if args.patterns:
             filtered = [
                 ex for ex in examples
-                if matches_patterns(classify_diff(ex.diff, ex.changed_files), args.patterns)
+                if any(matches_patterns(classify_diff(t.diff, t.changed_files), args.patterns)
+                       for t in getattr(ex, "turns", [ex]))
             ]
             stats["filtered_out"] += len(examples) - len(filtered)
             examples = filtered
 
         all_examples.extend(examples)
+        chains = [ex for ex in examples if isinstance(ex, MinedChain)]
         stats[f"repo_{repo_name}"] = len(examples)
         stats["total_examples"] += len(examples)
+        stats["chains"] += len(chains)
+        stats["chain_turns"] += sum(len(c.turns) for c in chains)
 
-        print(f"  {repo_name}: {len(examples)} examples", file=sys.stderr)
+        print(f"  {repo_name}: {len(examples)} examples ({len(chains)} chains)", file=sys.stderr)
 
     # Write output
     out = open(args.output, "w") if args.output != "-" else sys.stdout
@@ -243,7 +258,8 @@ def main():
     if args.stats:
         print(f"\n--- Mining Statistics ---", file=sys.stderr)
         print(f"Repos processed: {len(repos)}", file=sys.stderr)
-        print(f"Total examples: {stats['total_examples']}", file=sys.stderr)
+        print(f"Total examples: {stats['total_examples']} "
+              f"({stats['chains']} chains, {stats['chain_turns']} turns)", file=sys.stderr)
         print(f"Failed clones: {stats['failed_clone']}", file=sys.stderr)
         print(f"Failed mines: {stats['failed_mine']}", file=sys.stderr)
         if args.patterns:

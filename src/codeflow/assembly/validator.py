@@ -182,6 +182,26 @@ def _eval_code(content: str) -> Optional[str]:
     return code if isinstance(code, str) and code.strip() else None
 
 
+def _chain_errors(conv: List[dict]) -> List[str]:
+    """Errors in a history chain: (human, gpt) turns, each gpt turn reasoning
+    followed by a diff that applies."""
+    errors: List[str] = []
+    for n, turn in enumerate(conv):
+        if n % 2 == 0:
+            continue
+        parts = split_think(turn.get("value", ""))
+        if parts is None:
+            errors.append(f"assistant turn {n} has no reasoning (<think>...</think>)")
+            continue
+        errors.extend(f"turn {n}: {e}" for e in check_diff_structure(parts[1]))
+    return errors
+
+
+def _is_chain(conv: List[dict]) -> bool:
+    roles = [t.get("from") for t in conv]
+    return len(roles) >= 4 and roles == ["human", "gpt"] * (len(roles) // 2)
+
+
 def _conversation_errors(conv: List[dict]) -> Tuple[List[str], List[str]]:
     """(format errors, eval code) for a multi-turn record.
 
@@ -245,7 +265,10 @@ def validate_example(example: dict, min_score: float = 0.4) -> ValidationResult:
             result.warnings.append(f"low instruction relevance: {result.instruction_score:.2f}")
 
     conv = example.get("conversations")
-    if conv:
+    chain = bool(conv) and _is_chain(conv)
+    if chain:
+        result.format_errors, code_blocks = _chain_errors(conv), []
+    elif conv:
         result.format_errors, code_blocks = _conversation_errors(conv)
     else:
         code_blocks = _extract_code_blocks(output)

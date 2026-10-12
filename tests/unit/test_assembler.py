@@ -51,6 +51,15 @@ class TestFilterTrivialDiffs:
                  "source": "synthetic"}]
         assert filter_trivial_diffs(recs, min_changed_lines=4) == recs
 
+    def test_chain_is_judged_on_all_its_turns(self):
+        conv = [{"from": "human", "value": "a"}, {"from": "gpt", "value": _diff(1, 0)},
+                {"from": "human", "value": "b"}, {"from": "gpt", "value": _diff(3, 2)}]
+        recs = [{"instruction": "chain", "output": _diff(1, 0), "conversations": conv,
+                 "source": "git"}]
+        assert filter_trivial_diffs(recs, min_changed_lines=4) == recs
+        tiny = [dict(recs[0], conversations=conv[:2] + conv[:2])]
+        assert filter_trivial_diffs(tiny, min_changed_lines=4) == []
+
     def test_non_diff_git_record_is_kept(self):
         recs = [{"instruction": "x", "output": "no diff here", "source": "git"}]
         assert filter_trivial_diffs(recs, min_changed_lines=4) == recs

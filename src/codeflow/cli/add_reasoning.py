@@ -1,10 +1,10 @@
 """Add <think> reasoning to mined git transitions (thinking-mode training).
 
-Runs between mining and assembly. Each transition gets the reasoning a
-developer would have had before making its change (see
-git_mining/rationale.py); a transition whose reasoning can't be written is
-left out, since assembly would reject it anyway. Records that already open
-with reasoning pass through.
+Runs between mining and assembly. Each transition, and each turn of a
+history chain, gets the reasoning a developer would have had before making
+its change (see git_mining/rationale.py); a record whose reasoning can't be
+written is left out, since assembly would reject it anyway. Records that
+already have reasoning pass through.
 
 A rerun resumes: records already written, and ones that already failed, are
 skipped. Pass --fresh to start over.
@@ -21,8 +21,7 @@ import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from src.codeflow.assembly.validator import split_think
-from src.codeflow.git_mining.rationale import add_reasoning, write_rationale
+from src.codeflow.git_mining.rationale import needs_reasoning, reason_record
 from src.llm.env import provider_from_env
 from src.llm.provider import LLMAuthError, usage_line
 from src.shared import compute_dedup_key, load_jsonl, trim_torn_tail
@@ -73,14 +72,13 @@ def main() -> int:
             af.write(compute_dedup_key(rec) + "\n")
             af.flush()
 
-        ready = [r for r in todo if split_think(r.get("output", ""))]
-        for rec in ready:
-            finish(rec, rec)
-        pending = [r for r in todo if not split_think(r.get("output", ""))]
+        for rec in todo:
+            if not needs_reasoning(rec):
+                finish(rec, rec)
+        pending = [r for r in todo if needs_reasoning(r)]
 
         def work(rec):
-            text = write_rationale(rec, llm)
-            return add_reasoning(rec, text) if text else None
+            return reason_record(rec, llm)
 
         with ThreadPoolExecutor(max_workers=args.workers) as pool:
             futures = {pool.submit(work, r): r for r in pending}
