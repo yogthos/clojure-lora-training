@@ -551,9 +551,12 @@ class TestArcBoundaries:
         _commit(tmp_path, {"core.clj": "(ns c)\n(def a 3)\n"}, "change var a to three now")
         exs = _mine(tmp_path, 3)
         assert exs
+        # The merge is its own arc, described by the branch's commits; no
+        # other arc carries its changes.
         for ex in exs:
-            assert "side.clj" not in ex.diff
-            assert "side namespace" not in ex.instruction
+            assert ("side.clj" in ex.diff) == ("side namespace" in ex.instruction)
+            if "side.clj" in ex.diff:
+                assert "core.clj" not in ex.diff
 
     def test_non_clojure_commit_does_not_break_arc(self, tmp_path):
         _init(tmp_path)
@@ -599,3 +602,72 @@ def test_mined_record_carries_repo():
     ex = MinedExample(repo_name="owner__lib", instruction="fix x", before={}, after={},
                       diff="diff --git a/a b/a\n", changed_files=[])
     assert ex.to_dict()["repo"] == "owner__lib"
+
+
+class TestMergedPullRequests:
+    """In a pull-request workflow the mainline is mostly merges; each merge is
+    one arc: the PR's whole change, described by its title."""
+
+    def _pr(self, root, branch, commits, merge_msg):
+        _git(root, "checkout", "-q", "-b", branch)
+        for files, msg in commits:
+            _commit(root, files, msg)
+        _git(root, "checkout", "-q", "main")
+        _git(root, "merge", "-q", "--no-ff", "-m", merge_msg, branch)
+
+    def test_pr_title_from_merge_body(self, tmp_path):
+        _init(tmp_path)
+        _commit(tmp_path, {"src/a.clj": "(ns a)\n\n(defn fetch [u] u)\n"}, "initial fetch namespace here")
+        self._pr(tmp_path, "retry", [({"src/a.clj": "(ns a)\n\n(defn fetch [u] (retry u))\n"}, "wip"),
+                                      ({"src/a.clj": "(ns a)\n\n(defn fetch [u] (retry 3 u))\n"}, "tweak")],
+                 "Merge pull request #12 from someone/retry\n\nRetry failed fetches three times")
+        ex = _mine(tmp_path, 3)[-1]
+        assert ex.instruction == "Retry failed fetches three times"
+        assert "+(defn fetch [u] (retry 3 u))" in ex.diff
+        assert "-(defn fetch [u] u)" in ex.diff
+
+    def test_branch_subjects_when_the_merge_has_no_title(self, tmp_path):
+        _init(tmp_path)
+        _commit(tmp_path, {"src/a.clj": "(ns a)\n\n(defn f [] 1)\n"}, "initial namespace with f")
+        self._pr(tmp_path, "feat", [({"src/a.clj": "(ns a)\n\n(defn f [] 2)\n"}, "make f return two"),
+                                     ({"src/a.clj": "(ns a)\n\n(defn f [] 2)\n\n(defn g [] 3)\n"},
+                                      "add g returning three")],
+                 "Merge branch 'feat'")
+        ex = _mine(tmp_path, 3)[-1]
+        assert ex.instruction == "make f return two; add g returning three"
+
+    def test_huge_sync_merge_is_skipped(self, tmp_path):
+        _init(tmp_path)
+        _commit(tmp_path, {"src/a.clj": "(ns a)\n(def v 0)\n"}, "initial namespace with v")
+        self._pr(tmp_path, "dev", [({"src/a.clj": f"(ns a)\n(def v {i})\n"}, f"set v to {i} here")
+                                    for i in range(1, 23)],
+                 "Merge branch 'dev' into main")
+        assert all("set v to" not in ex.instruction for ex in _mine(tmp_path, 3))
+
+    def test_merge_description_skips_housekeeping(self, tmp_path):
+        _init(tmp_path)
+        _commit(tmp_path, {"src/a.clj": "(ns a)\n\n(defn f [] 1)\n"}, "initial namespace with f")
+        self._pr(tmp_path, "rel", [({"src/a.clj": "(ns a)\n\n(defn f [] 2)\n"}, "feat: Add a faster f path"),
+                                    ({"README.md": "x\n"}, "docs: Update README for f"),
+                                    ({"src/a.clj": "(ns a)\n\n(defn f [] 3)\n"}, "deps: Bump clj-kondo to latest"),
+                                    ({"CHANGELOG.md": "y\n"}, "chore: Release v1.4.0")],
+                 "Merge branch 'dev'")
+        assert _mine(tmp_path, 3)[-1].instruction == "Add a faster f path"
+
+    def test_merge_of_many_changes_is_skipped(self, tmp_path):
+        _init(tmp_path)
+        _commit(tmp_path, {"src/a.clj": "(ns a)\n(def v 0)\n"}, "initial namespace with v")
+        self._pr(tmp_path, "dev", [({"src/a.clj": f"(ns a)\n(def v {i})\n"}, f"change v to value {i}")
+                                    for i in range(1, 9)],
+                 "Merge branch 'dev'")
+        assert all("change v" not in ex.instruction for ex in _mine(tmp_path, 3))
+
+
+class TestConventionalPrefix:
+    def test_type_prefix_is_stripped(self):
+        from src.codeflow.git_mining.miner import _synthesize_instruction
+        assert _synthesize_instruction(["feat: Add download flag", "fix(parser): handle nil input"]) == \
+            "Add download flag; handle nil input"
+        # Conventional types are lowercase; "Fix:" is a plain title.
+        assert _synthesize_instruction(["Fix: crash on empty map input"]) == \
+            "Fix: crash on empty map input"

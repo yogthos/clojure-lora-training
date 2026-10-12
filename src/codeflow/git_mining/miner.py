@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from .commit_filter import (
+    MERGE_SUBJECT,
     CommitInfo,
     filter_clojure_commits,
     has_meaningful_message,
@@ -387,6 +388,25 @@ _CHANGELOG_RE = re.compile(r"^\*?\s*([\w./\-]+)\s*:\s*(.*)$")
 _SRC_EXTS = (".clj", ".cljs", ".cljc", ".cljx", ".edn")
 
 
+# Conventional-commit type prefix: "feat: ", "fix(parser): ", "refactor!: ".
+_CONVENTIONAL = re.compile(
+    r"^(feat|fix|refactor|perf|test|tests|docs|doc|chore|build|ci|style|deps|revert)"
+    r"(\([^)]*\))?!?:\s+")
+# Housekeeping a merge description leaves out: docs, release and dependency
+# bookkeeping rather than code changes.
+_HOUSEKEEPING = re.compile(
+    r"^((docs?|chore|deps|ci|build|style)(\([^)]*\))?!?:|bump\b|release\b|update (changelog|readme)"
+    r"|prepare release|version\b|\[(maven-release|ci)|merge\b)", re.I)
+# A merge whose branch made more distinct changes than this isn't one piece
+# of work; it gets no description and is skipped.
+MAX_MERGE_CHANGES = 6
+
+
+def _strip_conventional(line: str) -> str:
+    stripped = _CONVENTIONAL.sub("", line, count=1)
+    return stripped if stripped.strip() else line
+
+
 def _clean_changelog_prefix(line: str) -> str:
     """Strip a leading ``* path:`` changelog prefix, keeping the description.
 
@@ -429,7 +449,7 @@ def _synthesize_instruction(messages: List[str]) -> str:
             continue
         if first.startswith("Merge pull request") or first.startswith("Merge branch"):
             continue
-        first = _clean_changelog_prefix(first)
+        first = _strip_conventional(_clean_changelog_prefix(first))
         if not first:
             continue
         if not has_meaningful_message(first):
@@ -437,6 +457,51 @@ def _synthesize_instruction(messages: List[str]) -> str:
         if first not in lines:
             lines.append(first)
     return "; ".join(lines)
+
+
+# A merge bringing in more commits than this is a release or sync merge, not
+# one piece of work.
+MAX_MERGE_COMMITS = 20
+
+_TRAILER = re.compile(r"^(Signed-off-by|Co-authored-by|Reviewed-by|See merge request)\b", re.I)
+
+
+def _git_lines(repo_path: str, *args: str) -> List[str]:
+    out = subprocess.run([*_GIT, "-C", repo_path, *args], capture_output=True, text=True,
+                         errors="replace")
+    return out.stdout.splitlines() if out.returncode == 0 else []
+
+
+def _merge_intent(repo_path: str, sha: str, subject: str) -> str:
+    """What a mainline merge did: its own subject if it isn't git's or
+    GitHub's boilerplate, else the PR title (first line of the body), else
+    the branch's commit subjects. Empty for a merge too big to describe."""
+    if not MERGE_SUBJECT.match(subject):
+        return subject
+    side = [s.strip() for s in _git_lines(repo_path, "log", "--no-merges", "--reverse",
+                                          "--format=%s", f"{sha}^1..{sha}^2") if s.strip()]
+    if not side or len(side) > MAX_MERGE_COMMITS:
+        return ""
+    for line in _git_lines(repo_path, "log", "-1", "--format=%b", sha):
+        line = line.strip().lstrip("*- ").strip()
+        if not line or _TRAILER.match(line):
+            continue
+        if has_meaningful_message(line):
+            return line
+        break
+    changes = [_strip_conventional(s) for s in side
+               if has_meaningful_message(s) and not _HOUSEKEEPING.match(s)]
+    changes = list(dict.fromkeys(changes))
+    return "; ".join(changes) if len(changes) <= MAX_MERGE_CHANGES else ""
+
+
+def _describe_merges(repo_path: str, commits: List[CommitInfo]) -> None:
+    """Give each mainline merge that touches Clojure code the description of
+    the work it merged (in place). In a pull-request workflow nearly all code
+    reaches the mainline this way."""
+    for c in commits:
+        if c.is_merge and any(is_clojure_file(f) for f in c.files):
+            c.message = _merge_intent(repo_path, c.hash, c.message)
 
 
 def _build_arcs(commits: List[CommitInfo], span: int) -> List[List[CommitInfo]]:
@@ -452,7 +517,13 @@ def _build_arcs(commits: List[CommitInfo], span: int) -> List[List[CommitInfo]]:
     arcs: List[List[CommitInfo]] = []
     run: List[CommitInfo] = []
     for c in commits:
-        if c.hash in accepted:
+        if c.hash in accepted and c.is_merge:
+            # A merged PR is already a multi-commit span: an arc of its own.
+            if run:
+                arcs.append(run)
+            arcs.append([c])
+            run = []
+        elif c.hash in accepted:
             run.append(c)
             if len(run) == span:
                 arcs.append(run)
@@ -508,6 +579,8 @@ def mine_repository(
         commits = list(reversed(
             get_commit_list(repo_path, max_count=max_commits, since=since)
         ))
+
+    _describe_merges(repo_path, commits)
 
     # Step 2: walk arcs of consecutive accepted commits, a cumulative triplet each.
     span = max(1, triplet_span)
