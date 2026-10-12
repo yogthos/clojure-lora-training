@@ -76,3 +76,13 @@ def test_auth_error_stops(tmp_path, mined, monkeypatch):
             raise LLMAuthError("401")
     with pytest.raises(LLMAuthError):
         _run(monkeypatch, _NoAuth(), ["--input", str(mined), "--output", str(tmp_path / "o.jsonl")])
+
+
+def test_reports_llm_usage(tmp_path, mined, monkeypatch, capsys):
+    class _Metered(_LLM):
+        def get_usage_stats(self):
+            return {"total_calls": 4, "total_input_tokens": 100,
+                    "total_cached_input_tokens": 0, "total_output_tokens": 50}
+    _run(monkeypatch, _Metered(), ["--input", str(mined), "--output", str(tmp_path / "o.jsonl")])
+    assert "LLM usage: 4 calls, 100 input tokens (0 cached), 50 output tokens" \
+        in capsys.readouterr().err

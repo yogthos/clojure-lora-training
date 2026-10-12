@@ -150,6 +150,7 @@ class DeepSeekProvider(LLMProvider):
                 content=content,
                 input_tokens=usage.get("prompt_tokens", 0),
                 output_tokens=usage.get("completion_tokens", 0),
+                cached_input_tokens=usage.get("prompt_cache_hit_tokens", 0),
                 model=data.get("model", self.config.model),
                 finish_reason=choice.get("finish_reason") or "",
             )

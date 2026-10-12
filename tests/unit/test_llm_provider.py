@@ -229,3 +229,34 @@ class TestOllamaUnreachable:
         with pytest.raises(LLMUnavailableError, match="Ollama"):
             OllamaProvider(LLMProviderConfig(api_key="", base_url="http://localhost:1",
                                              model="m", max_tokens=8, temperature=0.0))
+
+
+class TestCachedInputTokens:
+    """DeepSeek bills cache-hit input at a fraction of a miss; budgets need both."""
+
+    def _deepseek(self):
+        from src.llm.deepseek import DeepSeekProvider
+        from src.llm.provider import LLMProviderConfig
+        return DeepSeekProvider(LLMProviderConfig(api_key="k", base_url="http://x", model="m",
+                                                  max_tokens=8, temperature=0.0))
+
+    def test_deepseek_reports_cache_hits(self):
+        resp = MagicMock(status_code=200)
+        resp.json.return_value = {
+            "choices": [{"message": {"content": "hi"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 1000, "completion_tokens": 50,
+                      "prompt_cache_hit_tokens": 800, "prompt_cache_miss_tokens": 200}}
+        p = self._deepseek()
+        with patch("src.llm.deepseek.requests.post", return_value=resp):
+            p.call("S", "U")
+            p.call("S", "U")
+        stats = p.get_usage_stats()
+        assert stats["total_input_tokens"] == 2000
+        assert stats["total_cached_input_tokens"] == 1600
+        assert stats["total_output_tokens"] == 100
+
+    def test_usage_line(self):
+        from src.llm.provider import usage_line
+        assert usage_line({"total_calls": 3, "total_input_tokens": 12000,
+                           "total_cached_input_tokens": 9000, "total_output_tokens": 1500}) == \
+            "LLM usage: 3 calls, 12,000 input tokens (9,000 cached), 1,500 output tokens"

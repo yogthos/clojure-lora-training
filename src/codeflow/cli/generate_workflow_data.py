@@ -22,6 +22,7 @@ from pathlib import Path
 
 
 from src.llm.env import provider_from_env
+from src.llm.provider import usage_line
 from src.shared import load_jsonl, trim_torn_tail
 from src.codeflow.synthetic import jolt_eval
 from src.codeflow.synthetic.jolt_eval import jolt_available
@@ -169,6 +170,8 @@ def main() -> int:
           f"({len(todo) - kept} dropped)", file=sys.stderr)
     for reason, n in sorted(drop_counts().items(), key=lambda kv: -kv[1]):
         print(f"  dropped {n}: {reason}", file=sys.stderr)
+    if hasattr(llm, "get_usage_stats"):
+        print(usage_line(llm.get_usage_stats()), file=sys.stderr)
     print(f"Output: {out}", file=sys.stderr)
     return 0
 

@@ -55,6 +55,7 @@ class TestLogitBiasRetry:
             "max_delay": 0.1,
         }
         provider._total_input_tokens = 0
+        provider._total_cached_input_tokens = 0
         provider._total_output_tokens = 0
         provider._total_calls = 0
 
@@ -102,7 +103,7 @@ class TestFinishReason:
         p.base_url = "https://api.deepseek.com"
         p.headers = {}
         p.retry_config = {"max_retries": 2, "base_delay": 0.0, "max_delay": 0.0}
-        p._total_input_tokens = p._total_output_tokens = p._total_calls = 0
+        p._total_input_tokens = p._total_cached_input_tokens = p._total_output_tokens = p._total_calls = 0
         return p
 
     def _reply(self, finish_reason):

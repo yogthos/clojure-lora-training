@@ -81,6 +81,7 @@ class LLMProvider(ABC):
             "max_delay": 60.0
         }
         self._total_input_tokens = 0
+        self._total_cached_input_tokens = 0
         self._total_output_tokens = 0
         self._total_calls = 0
 
@@ -266,6 +267,7 @@ class LLMProvider(ABC):
                 # Track usage
                 with _usage_lock:  # providers are shared across worker threads
                     self._total_input_tokens += response.input_tokens
+                    self._total_cached_input_tokens += response.cached_input_tokens
                     self._total_output_tokens += response.output_tokens
                     self._total_calls += 1
 
@@ -333,6 +335,7 @@ class LLMProvider(ABC):
         """Get cumulative usage statistics."""
         return {
             "total_input_tokens": self._total_input_tokens,
+            "total_cached_input_tokens": self._total_cached_input_tokens,
             "total_output_tokens": self._total_output_tokens,
             "total_tokens": self._total_input_tokens + self._total_output_tokens,
             "total_calls": self._total_calls
@@ -341,8 +344,17 @@ class LLMProvider(ABC):
     def reset_usage_stats(self) -> None:
         """Reset usage statistics."""
         self._total_input_tokens = 0
+        self._total_cached_input_tokens = 0
         self._total_output_tokens = 0
         self._total_calls = 0
+
+
+def usage_line(stats: Dict[str, int]) -> str:
+    """One-line usage summary for the end of a pipeline run."""
+    return (f"LLM usage: {stats['total_calls']:,} calls, "
+            f"{stats['total_input_tokens']:,} input tokens "
+            f"({stats.get('total_cached_input_tokens', 0):,} cached), "
+            f"{stats['total_output_tokens']:,} output tokens")
 
 
 # Provider registry for factory function

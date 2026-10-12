@@ -381,6 +381,9 @@ def main():
     if args.stats:
         print(f"\nOutput: {args.output} ({count_records(args.output)} records)",
               file=sys.stderr)
+    if hasattr(llm, "get_usage_stats"):
+        from src.llm.provider import usage_line
+        print(usage_line(llm.get_usage_stats()), file=sys.stderr)
 
 
 if __name__ == "__main__":

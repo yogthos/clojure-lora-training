@@ -157,3 +157,16 @@ def test_session_factory_passes_files(monkeypatch):
     factory(files={"src/a.clj": "(ns a)"})
     assert seen == [{"jolt_path": "/x/jolt"},
                     {"jolt_path": "/x/jolt", "files": {"src/a.clj": "(ns a)"}}]
+
+
+def test_reports_llm_usage(tmp_path, git_data, monkeypatch, capsys):
+    class _Metered(_CountingLLM):
+        def get_usage_stats(self):
+            return {"total_calls": 7, "total_input_tokens": 9000,
+                    "total_cached_input_tokens": 4000, "total_output_tokens": 800}
+    mod = _script()
+    _run(mod, monkeypatch, _Metered(),
+         ["--git-data", str(git_data), "-o", str(tmp_path / "wf.jsonl"), "--target", "2",
+          "--workers", "1"])
+    assert "LLM usage: 7 calls, 9,000 input tokens (4,000 cached), 800 output tokens" \
+        in capsys.readouterr().err

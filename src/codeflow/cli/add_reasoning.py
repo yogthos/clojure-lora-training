@@ -24,7 +24,7 @@ from pathlib import Path
 from src.codeflow.assembly.validator import split_think
 from src.codeflow.git_mining.rationale import add_reasoning, write_rationale
 from src.llm.env import provider_from_env
-from src.llm.provider import LLMAuthError
+from src.llm.provider import LLMAuthError, usage_line
 from src.shared import compute_dedup_key, load_jsonl, trim_torn_tail
 
 
@@ -98,6 +98,8 @@ def main() -> int:
                 if n % 50 == 0 or n == len(pending):
                     print(f"  {n}/{len(pending)} processed", file=sys.stderr)
 
+    if hasattr(llm, "get_usage_stats"):
+        print(usage_line(llm.get_usage_stats()), file=sys.stderr)
     print(f"Wrote {kept} records with reasoning to {out}", file=sys.stderr)
     return 0
 
