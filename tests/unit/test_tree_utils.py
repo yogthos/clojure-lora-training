@@ -249,3 +249,33 @@ class TestSampleFeaturesEdgeCases:
         tree = build_baseline_tree()
         features = sample_features(tree, count=5, min_depth=10)
         assert features == []
+
+
+class TestSampleNodesExactCount:
+    """Proportional sampling drew with replacement and then deduplicated, and
+    balanced sampling lost slots, so both returned fewer nodes than asked."""
+
+    def test_proportional_returns_count_unique(self):
+        import random
+        tree = build_baseline_tree()
+        tree.nodes["concurrency/agents"].features = [{"name": str(i)} for i in range(500)]
+        random.seed(0)
+        nodes = sample_nodes(tree, count=10, strategy="proportional")
+        assert len(nodes) == 10
+        assert len({n.name for n in nodes}) == 10
+
+    def test_balanced_returns_count(self):
+        import random
+        random.seed(0)
+        nodes = sample_nodes(build_baseline_tree(), count=30, strategy="balanced")
+        assert len(nodes) == 30
+        assert len({n.name for n in nodes}) == 30
+
+    def test_balanced_small_count_not_always_first_roots(self):
+        import random
+        tree = build_baseline_tree()
+        roots = set()
+        for s in range(20):
+            random.seed(s)
+            roots |= {n.name.split("/")[0] for n in sample_nodes(tree, count=3, strategy="balanced")}
+        assert len(roots) > 3

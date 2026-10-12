@@ -117,26 +117,16 @@ def sample_nodes(
     if strategy == "balanced":
         return _balanced_sample(tree, eligible, count)
 
-    # "proportional": weighted by feature count
+    # "proportional": weighted by feature count, without replacement.
+    # Drawing with replacement and deduplicating returned fewer than count
+    # whenever a heavy node was drawn repeatedly. Efraimidis-Spirakis: keep the
+    # count largest u**(1/w) keys.
     weights = [max(len(n.features), 1) for n in eligible]
-    total = sum(weights)
-    if total == 0:
-        return random.sample(eligible, count)
-
-    probs = [w / total for w in weights]
-    selected = random.choices(eligible, weights=probs, k=count)
-
-    # Deduplicate
-    seen_names = set()
-    result = []
-    for node in selected:
-        if node.name not in seen_names:
-            result.append(node)
-            seen_names.add(node.name)
-            if len(result) >= count:
-                break
-
-    return result
+    keyed = sorted(
+        zip((random.random() ** (1.0 / w) for w in weights), range(len(eligible))),
+        reverse=True,
+    )
+    return [eligible[i] for _, i in keyed[:count]]
 
 
 def _balanced_sample(
@@ -153,9 +143,12 @@ def _balanced_sample(
             by_root[root] = []
         by_root[root].append(node)
 
-    # Allocate slots across root categories
+    # Allocate slots across root categories. Shuffle first so that when
+    # there are fewer slots than categories the extra slots don't always go
+    # to the first categories in dict order.
     root_cats = list(by_root.keys())
-    slots_per_cat = max(1, count // max(len(root_cats), 1))
+    random.shuffle(root_cats)
+    slots_per_cat = count // max(len(root_cats), 1)
     remainder = count - slots_per_cat * len(root_cats)
 
     result = []
@@ -165,6 +158,13 @@ def _balanced_sample(
         if pool:
             sampled = random.sample(pool, min(n, len(pool)))
             result.extend(sampled)
+
+    # Categories smaller than their share leave slots unfilled; top up from
+    # the remaining nodes so the caller gets count nodes.
+    if len(result) < count:
+        chosen = {id(n) for n in result}
+        rest = [n for n in eligible if id(n) not in chosen]
+        result.extend(random.sample(rest, min(count - len(result), len(rest))))
 
     return result[:count]
 
