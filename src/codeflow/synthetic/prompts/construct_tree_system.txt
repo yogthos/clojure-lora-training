@@ -5,7 +5,8 @@ Categories: metaprogramming, polymorphism, concurrency, data-transformation,
 interop, web-http, data-storage, repl-development, testing, error-handling,
 configuration, data-structures.
 
-For each feature, output:
-{"feature_index": N, "category": "...", "subcategory_hint": "..."}
+Output a JSON object with a "classifications" key holding one entry per
+feature:
+{"classifications": [{"feature_index": N, "category": "...", "subcategory_hint": "..."}]}
 
-Output JSON array only, no markdown.
+Output the JSON object only, no markdown.

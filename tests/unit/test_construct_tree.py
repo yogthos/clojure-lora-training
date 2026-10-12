@@ -164,3 +164,53 @@ class TestUntypedFeatureRouting:
         tree = assign_features_to_tree(
             [{"feature_type": "futures-promises", "name": "p", "description": "x"}])
         assert _where(tree, "p") == ["concurrency/futures-promises"]
+
+
+class _JsonLLM:
+    def __init__(self, payload=None, exc=None):
+        self.payload, self.exc, self.kwargs = payload, exc, {}
+
+    def call(self, system_prompt, user_prompt, **kw):
+        self.kwargs = dict(kw, system=system_prompt)
+        if self.exc:
+            raise self.exc
+        return json.dumps(self.payload)
+
+
+class TestBuildTreeWithLLM:
+    _FEATS = [
+        {"feature_type": "", "name": "go-loop", "description": "event loop"},
+        {"feature_type": "macros", "name": "defmacro", "description": "macro"},
+    ]
+
+    def test_object_reply_classifies(self):
+        from src.codeflow.synthetic.construct_tree import build_tree_with_llm
+        llm = _JsonLLM({"classifications": [
+            {"feature_index": 0, "category": "concurrency", "subcategory_hint": "core-async"},
+            {"feature_index": 1, "category": "metaprogramming"},
+        ]})
+        tree = build_tree_with_llm(self._FEATS, llm)
+        assert _where(tree, "go-loop")[0].startswith("concurrency/")
+        assert _where(tree, "defmacro")[0].startswith("metaprogramming/")
+        assert '"classifications"' in llm.kwargs["system"]
+        assert llm.kwargs["reject_truncated"] is True
+
+    def test_unclassified_features_are_kept(self):
+        from src.codeflow.synthetic.construct_tree import build_tree_with_llm
+        llm = _JsonLLM({"classifications": [
+            {"feature_index": 0, "category": "concurrency"},
+        ]})
+        tree = build_tree_with_llm(self._FEATS, llm)
+        assert len(_where(tree, "defmacro")) == 1
+
+    def test_llm_error_falls_back_to_keyword_routing(self):
+        from src.codeflow.synthetic.construct_tree import build_tree_with_llm
+        from src.llm.provider import LLMError
+        tree = build_tree_with_llm(self._FEATS, _JsonLLM(exc=LLMError("503")))
+        assert _where(tree, "defmacro") == ["metaprogramming/macros"]
+
+    def test_auth_error_propagates(self):
+        from src.codeflow.synthetic.construct_tree import build_tree_with_llm
+        from src.llm.provider import LLMAuthError
+        with pytest.raises(LLMAuthError):
+            build_tree_with_llm(self._FEATS, _JsonLLM(exc=LLMAuthError("401")))

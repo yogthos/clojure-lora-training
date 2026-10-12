@@ -18,7 +18,9 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple
 from collections import defaultdict
 
-from ...llm.provider import LLMProvider
+from ...llm.provider import LLMAuthError, LLMError, LLMProvider
+from .llm_json import parse_json_list
+from .prompts import CONSTRUCT_TREE_SYSTEM as _CONSTRUCT_TREE_SYSTEM
 
 
 # Top-level Clojure feature taxonomy categories
@@ -326,45 +328,42 @@ def build_tree_with_llm(
     """
     tree = build_baseline_tree()
 
-    _SYSTEM = """You are a Clojure code taxonomy expert. Given a list of extracted
-Clojure code features, classify each one into a hierarchical taxonomy.
-
-Categories: metaprogramming, polymorphism, concurrency, data-transformation,
-interop, web-http, data-storage, repl-development, testing, error-handling,
-configuration, data-structures.
-
-For each feature, output:
-{"feature_index": N, "category": "...", "subcategory_hint": "..."}
-
-Output JSON array only, no markdown."""
-
     features_json = json.dumps(features, indent=2)
     prompt = f"Classify these Clojure features:\n\n{features_json}"
 
     try:
         result = llm.call(
-            system_prompt=_SYSTEM,
+            system_prompt=_CONSTRUCT_TREE_SYSTEM,
             user_prompt=prompt,
             temperature=0.1,
             max_tokens=4096,
             require_json=True,
+            reject_truncated=True,
         )
-        classifications = json.loads(result) if isinstance(result, str) else result
-        if isinstance(classifications, dict):
-            classifications = [classifications]
-
-        for cls in classifications:
-            idx = cls.get("feature_index", -1)
-            cat = cls.get("category", "")
-            if 0 <= idx < len(features):
-                sub_node = _best_subcategory(cat, features[idx], tree)
-                if sub_node:
-                    tree.nodes[sub_node].features.append(features[idx])
-    except Exception:
+        classifications = parse_json_list(result, "classifications")
+    except LLMAuthError:
+        raise
+    except (LLMError, ValueError):
         # Fall back to keyword routing
-        tree = assign_features_to_tree(features, tree)
+        return assign_features_to_tree(features, tree)
 
-    return tree
+    placed = set()
+    for cls in classifications:
+        try:
+            idx = int(cls.get("feature_index", -1))
+        except (TypeError, ValueError):
+            continue
+        if not 0 <= idx < len(features) or idx in placed:
+            continue
+        sub_node = _best_subcategory(str(cls.get("category", "")), features[idx], tree)
+        if sub_node:
+            tree.nodes[sub_node].features.append(features[idx])
+            placed.add(idx)
+
+    # Features the model skipped or put in an unknown category are routed by
+    # keyword rather than dropped.
+    leftover = [f for i, f in enumerate(features) if i not in placed]
+    return assign_features_to_tree(leftover, tree)
 
 
 def get_tree_statistics(tree: FeatureTree) -> dict:
