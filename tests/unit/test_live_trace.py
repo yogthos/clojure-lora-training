@@ -59,7 +59,7 @@ class _FakeSession:
 def _run(llm, session=None, **kw):
     session = session or _FakeSession()
     return run_live_trace("add a CSV row validator", "a data library", llm,
-                          session_factory=lambda: session, **kw), session
+                          session_factory=lambda **_: session, **kw), session
 
 
 _HAPPY = [
@@ -173,3 +173,94 @@ def test_against_real_jolt():
 def test_is_definition(code, expected):
     from src.codeflow.synthetic.live_trace import is_definition
     assert is_definition(code) is expected
+
+
+def test_raw_newlines_in_json_strings_are_accepted():
+    # DeepSeek's JSON mode sometimes emits literal newlines inside strings.
+    raw = '{"thinking": "line one\nline two", "action": "eval", "code": "(+ 1\n 2)"}'
+    steps = [raw] + _HAPPY[1:]
+    trace, _ = _run(_ScriptedLLM(*steps))
+    assert trace is not None and trace.steps[0].code == "(+ 1\n 2)"
+
+
+def test_drop_reasons_are_counted():
+    from src.codeflow.synthetic.live_trace import drop_counts
+    before = drop_counts().get("applied before 3 evals", 0)
+    _run(_ScriptedLLM(_eval("t", "(+ 1 2)"), _apply("too soon")))
+    assert drop_counts()["applied before 3 evals"] == before + 1
+
+
+def test_only_the_first_of_several_steps_is_taken():
+    two = _eval("Plan.", "(defn valid-row? [r] (= 3 (count r)))") + "\n\n" + _eval("next", "(boom)")
+    trace, _ = _run(_ScriptedLLM(two, *_HAPPY[1:]))
+    assert trace is not None
+    assert [s.code for s in trace.steps][0] == "(defn valid-row? [r] (= 3 (count r)))"
+    assert "(boom)" not in [s.code for s in trace.steps]
+
+
+@pytest.mark.parametrize("leak", [
+    "Per the instructions I should create the file.",
+    "I've evaluated 6 times, well past the 3-eval minimum.",
+    "The session is empty and no files are shown, so I start fresh.",
+    "As the rules say, keep each eval small.",
+])
+def test_reasoning_about_the_generator_prompt_is_retried(leak):
+    leaky = _eval(leak, "(defn valid-row? [r] (= 3 (count r)))")
+    trace, _ = _run(_ScriptedLLM(leaky, *_HAPPY))
+    assert trace is not None and leak not in trace.steps[0].thinking
+    trace, _ = _run(_ScriptedLLM(leaky, leaky))
+    assert trace is None
+
+
+def test_retry_says_what_was_wrong():
+    leaky = _eval("Per the instructions I start here.", "(defn valid-row? [r] (= 3 (count r)))")
+    llm = _ScriptedLLM(leaky, *_HAPPY)
+    _run(llm)
+    assert "rejected" not in llm.prompts[0]
+    assert "rejected" in llm.prompts[1] and "instructions" in llm.prompts[1]
+    assert "rejected" not in llm.prompts[2]
+
+
+def test_first_step_prompt_does_not_call_the_session_empty():
+    llm = _ScriptedLLM(*_HAPPY)
+    _run(llm)
+    assert "empty" not in llm.prompts[0].lower()
+
+
+@pytest.mark.skipif(shutil.which("jolt") is None, reason="jolt not installed")
+class TestNewFilesLoad:
+    def _trace(self, diff):
+        from src.codeflow.synthetic.live_trace import LiveTrace
+        return LiveTrace(request="r", context="", diff=diff)
+
+    def _diff(self, *files):
+        out = ""
+        for path, body in files:
+            lines = body.splitlines()
+            out += (f"diff --git a/{path} b/{path}\nnew file mode 100644\n--- /dev/null\n+++ b/{path}\n"
+                    f"@@ -0,0 +1,{len(lines)} @@\n" + "".join(f"+{l}\n" for l in lines))
+        return out
+
+    def test_test_file_requiring_its_source_loads(self):
+        from src.codeflow.synthetic.jolt_eval import JoltSession
+        from src.codeflow.synthetic.live_trace import _new_files_load
+        diff = self._diff(("src/m/core.clj", "(ns m.core)\n(defn sq [x] (* x x))"),
+                          ("test/m/core_test.clj",
+                           "(ns m.core-test\n  (:require [clojure.test :refer [deftest is]]\n"
+                           "            [m.core :refer [sq]]))\n(deftest t (is (= 4 (sq 2))))"))
+        assert _new_files_load(self._trace(diff), JoltSession)
+
+    def test_broken_ns_form_fails(self):
+        from src.codeflow.synthetic.jolt_eval import JoltSession, eval_forms
+        from src.codeflow.synthetic.live_trace import _new_files_load
+        if eval_forms(["(nope 1)"])[0].ok or "unbound" in eval_forms(["(nope 1)"])[0].error.lower():
+            pytest.xfail("jolt without unresolved-symbol errors (jolt-lang/jolt#1323)")
+        diff = self._diff(("src/db/jdbc.clj",
+                           '(ns db.jdbc\n  "Doc.")\n  (:require [clojure.string :as str]))\n(defn f [] 1)'))
+        assert not _new_files_load(self._trace(diff), JoltSession)
+
+    def test_namespace_that_does_not_match_its_path_fails(self):
+        from src.codeflow.synthetic.jolt_eval import JoltSession
+        from src.codeflow.synthetic.live_trace import _new_files_load
+        diff = self._diff(("src/csv.clj", "(ns app.csv)\n(defn f [] 1)"))
+        assert not _new_files_load(self._trace(diff), JoltSession)

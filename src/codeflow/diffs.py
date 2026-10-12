@@ -150,12 +150,42 @@ def apply_section_errors(output: str) -> List[str]:
     return ["trace has no ';; apply:' line"]
 
 
-def repair_trace_diff(solution: str) -> Optional[str]:
-    """Recompute the trailing diff's hunk counts; None if it's still not a patch.
+_EXTENDED_HEADER = re.compile(
+    r"^(index |new file mode|deleted file mode|old mode|new mode|similarity|rename |copy )")
 
-    LLMs get @@ counts wrong far more often than the hunk bodies, so the counts
-    are rebuilt from the bodies before the patch is checked.
+
+def add_git_headers(diff: str) -> str:
+    """Insert the ``diff --git`` line (and new/deleted file mode) before any
+    ``---``/``+++``/``@@`` file section that lacks one. Paths come from the
+    ``+++`` line, or ``---`` for a deletion."""
+    lines = split_lines(diff)
+    out: List[str] = []
+    for i, line in enumerate(lines):
+        if (line.startswith("--- ") and i + 2 < len(lines)
+                and lines[i + 1].startswith("+++ ") and lines[i + 2].startswith("@@")):
+            j = len(out) - 1
+            while j >= 0 and _EXTENDED_HEADER.match(out[j]):
+                j -= 1
+            if j < 0 or not out[j].startswith("diff --git "):
+                old, new = line[4:].strip(), lines[i + 1][4:].strip()
+                path = (new if new != "/dev/null" else old).split("/", 1)[-1]
+                out.append(f"diff --git a/{path} b/{path}")
+                if old == "/dev/null":
+                    out.append("new file mode 100644")
+                elif new == "/dev/null":
+                    out.append("deleted file mode 100644")
+        out.append(line)
+    return "".join(l + "\n" for l in out) if diff.endswith("\n") else "\n".join(out)
+
+
+def repair_trace_diff(solution: str) -> Optional[str]:
+    """Repair the trailing diff; None if it's still not a patch.
+
+    LLMs get @@ counts wrong far more often than the hunk bodies, and often
+    leave out the ``diff --git`` line, so both are rebuilt before the patch is
+    checked.
     """
+    solution = add_git_headers(solution)
     diff = extract_diff(solution)
     if not diff:
         return None

@@ -139,3 +139,26 @@ class TestNewFileContents:
                 "@@ -0,0 +1 @@\n+(ns a)\n@@ -0,0 +2 @@\n+(def y 2)\n"
                 "diff --git a/b.clj b/b.clj\n--- /dev/null\n+++ b/b.clj\n@@ -0,0 +1 @@\n+(ns b)\n")
         assert new_file_contents(diff) == {"a.clj": "(ns a)\n(def y 2)\n", "b.clj": "(ns b)\n"}
+
+
+class TestGitHeaders:
+    def test_missing_headers_are_added(self):
+        from src.codeflow.diffs import add_git_headers, check_patch
+        diff = ("--- /dev/null\n+++ b/src/q.clj\n@@ -0,0 +1 @@\n+(ns q)\n"
+                "--- a/src/r.clj\n+++ b/src/r.clj\n@@ -1 +1 @@\n-(ns r)\n+(ns r2)\n")
+        fixed = add_git_headers(diff)
+        assert fixed == ("diff --git a/src/q.clj b/src/q.clj\nnew file mode 100644\n" + diff.split("--- a/")[0]
+                         + "diff --git a/src/r.clj b/src/r.clj\n--- a/src/r.clj\n+++ b/src/r.clj\n"
+                         "@@ -1 +1 @@\n-(ns r)\n+(ns r2)\n")
+        assert check_patch(fixed) is None
+
+    def test_existing_headers_untouched(self):
+        from src.codeflow.diffs import add_git_headers
+        diff = "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n"
+        assert add_git_headers(diff) == diff
+
+    def test_trace_repair_adds_headers(self):
+        from src.codeflow.diffs import repair_trace_diff
+        out = repair_trace_diff(";; apply:\n--- /dev/null\n+++ b/a.clj\n@@ -0,0 +1,3 @@\n+(ns a)\n")
+        assert out == (";; apply:\ndiff --git a/a.clj b/a.clj\nnew file mode 100644\n"
+                       "--- /dev/null\n+++ b/a.clj\n@@ -0,0 +1,1 @@\n+(ns a)\n")

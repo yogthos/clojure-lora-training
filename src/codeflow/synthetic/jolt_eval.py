@@ -27,7 +27,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from .nrepl_client import NReplClient
 
@@ -38,8 +38,13 @@ NREPL_GIT_SHA = "d779043d18235a83025c2800b60c9080c1bc9adc"
 
 _DEPS_EDN = f"""{{:deps {{jolt-lang/nrepl {{:git/url "{NREPL_GIT_URL}"
                          :git/tag "{NREPL_GIT_TAG}" :git/sha "{NREPL_GIT_SHA}"}}}}
- :nrepl/middleware [nrepl.middleware/default-middleware]}}
+ :nrepl/middleware [nrepl.middleware/default-middleware]
+ :paths [{{paths}}]}}
 """
+
+
+def _deps_edn(paths: List[str]) -> str:
+    return _DEPS_EDN.replace("{paths}", " ".join(f'"{p}"' for p in paths))
 
 # Values are printed with this *print-length*, so an infinite seq returns
 # instead of hanging the printer.
@@ -155,10 +160,10 @@ class _JoltServer:
     """A ``jolt nrepl-server`` process in its own work directory."""
 
     def __init__(self, jolt_path: str, sandbox: bool, workdir: str,
-                 max_rss_mb: Optional[int] = None):
+                 max_rss_mb: Optional[int] = None, paths: Optional[List[str]] = None):
         self.workdir = workdir
         self.killed_for_memory = False
-        Path(workdir, "deps.edn").write_text(_DEPS_EDN)
+        Path(workdir, "deps.edn").write_text(_deps_edn(paths or ["src"]))
         tmp = Path(workdir, "tmp")
         tmp.mkdir(exist_ok=True)
         jolt_bin = shutil.which(jolt_path) or jolt_path
@@ -275,6 +280,19 @@ def render_observation(result: EvalResult) -> str:
     return "\n".join(parts)
 
 
+def _check_paths(files: Dict[str, str]) -> List[str]:
+    """Source roots for ``files`` (their top-level directories, plus src).
+    Paths must stay inside the work directory."""
+    roots = {"src"}
+    for rel in files:
+        parts = Path(rel).parts
+        if Path(rel).is_absolute() or ".." in parts or not parts:
+            raise ValueError(f"file path outside the session: {rel!r}")
+        if len(parts) > 1:
+            roots.add(parts[0])
+    return sorted(roots)
+
+
 class JoltSession:
     """One nREPL session in its own sandboxed ``jolt nrepl-server``.
 
@@ -286,7 +304,8 @@ class JoltSession:
 
     def __init__(self, timeout: float = 10.0, jolt_path: str = "jolt",
                  sandbox: Optional[bool] = None,
-                 max_rss_mb: Optional[int] = DEFAULT_MAX_RSS_MB):
+                 max_rss_mb: Optional[int] = DEFAULT_MAX_RSS_MB,
+                 files: Optional[Dict[str, str]] = None):
         self.timeout = timeout
         self.max_rss_mb = max_rss_mb
         self.alive = False
@@ -295,12 +314,17 @@ class JoltSession:
             sandbox = _sandbox_available()
         if sandbox:
             _prefetch_deps(jolt_path)
+        paths = _check_paths(files or {})
         self._workdir = tempfile.mkdtemp(prefix="jolt-eval-")
         self._server: Optional[_JoltServer] = None
         self._client: Optional[NReplClient] = None
         try:
+            for rel, content in (files or {}).items():
+                target = Path(self._workdir, rel)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(content)
             self._server = _JoltServer(jolt_path, sandbox=sandbox, workdir=self._workdir,
-                                       max_rss_mb=max_rss_mb)
+                                       max_rss_mb=max_rss_mb, paths=paths)
             self._client = NReplClient("127.0.0.1", self._server.port)
             self._session = self._client.request({"op": "clone"}, _STARTUP_TIMEOUT)[-1]["new-session"]
             self._client.request({

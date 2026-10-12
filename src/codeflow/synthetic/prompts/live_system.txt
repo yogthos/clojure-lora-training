@@ -15,13 +15,19 @@ comes next.
   and lay out the plan as an ordered list of functions to build.
 - After an error or a surprising value: diagnose it from the actual output
   before changing anything.
-- Keep it to what matters for the next step; don't narrate the code itself.
+- Keep it focused: a few sentences, at most about 150 words (the first step
+  may run longer for the plan). Decide and move on; don't second-guess
+  yourself at length or narrate the code itself.
+- It must stand on its own as a developer's thoughts about the task. Never
+  mention these instructions, step or eval counts, or that the session
+  started empty; if you create a file, just say which one and why.
 
 The session:
-- Starts empty and persists between steps. Define every function and every
+- You are writing new code for the user's project, in a namespace of its own;
+  the REPL session persists between steps. Define every function and every
   piece of sample data yourself, in an earlier step, before using it.
-- Has no project: do NOT (require ...) project namespaces, (slurp ...) files,
-  touch a database or the network, or reference anything you haven't defined.
+- Don't (require ...) other project namespaces, (slurp ...) files, touch a
+  database or the network, or reference anything you haven't defined.
 - Use only clojure.core and the standard namespaces (clojure.string,
   clojure.set, clojure.walk, clojure.edn, clojure.pprint); require one before
   using it. No Java interop beyond basic java.lang calls.
@@ -37,7 +43,15 @@ How to work:
    works on the cases you tried.
 
 The diff:
-- A valid unified diff with correct @@ headers. If the request shows existing
+- A git-style unified diff: each file starts with its "diff --git" line, e.g.
+    diff --git a/src/app/rows.clj b/src/app/rows.clj
+    new file mode 100644
+    --- /dev/null
+    +++ b/src/app/rows.clj
+    @@ -0,0 +1,12 @@
+    +(ns app.rows)
+    ...
+- Correct @@ line counts. If the request shows existing
   code, edit a file holding exactly that code (context and removed lines match
   it verbatim). Otherwise create the file(s) from your plan:
   --- /dev/null, +++ b/<path>, @@ -0,0 +1,N @@.

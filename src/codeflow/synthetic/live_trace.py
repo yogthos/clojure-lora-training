@@ -13,8 +13,10 @@ final ``gpt`` turn with the reasoning and the ``;; apply:`` diff.
 
 import json
 import re
+import threading
+from collections import Counter
 from dataclasses import dataclass, field
-from typing import Callable, List, Optional
+from typing import Callable, Dict, List, Optional
 
 from ...llm.provider import LLMAuthError, LLMError, LLMProvider
 from ..clj_text import top_level_forms
@@ -39,9 +41,36 @@ EVAL_TOOL = {
 MIN_EVALS = 3
 MAX_STEPS = 24
 
+_drops: Counter = Counter()
+_drops_lock = threading.Lock()
+
+
+def _dropped(reason: str) -> None:
+    with _drops_lock:
+        _drops[reason] += 1
+
+
+def drop_counts() -> Dict[str, int]:
+    """Why traces were dropped in this process, for run summaries."""
+    with _drops_lock:
+        return dict(_drops)
+
 # A short unit (8-200 chars) repeated back-to-back 10+ times: a degenerate
 # sampling loop, e.g. "'zip/xml-zip 'zip/seq-zip 'zip/xml-zip ...".
 _REPETITION_RE = re.compile(r"(.{8,200}?)\1{9,}", re.DOTALL)
+
+
+# Reasoning that talks about the generator's instructions rather than the
+# task. It's training text, and the trained agent never sees those rules.
+_PROMPT_LEAK = re.compile(
+    r"\b(the|my|these|per the|following the|as the) (instructions?|rules)\b"
+    r"|\b\d+-eval\b|\beval minimum\b|\bminimum (of )?\d+ evals?\b"
+    r"|\bsession is (empty|fresh)\b|\bno (existing )?(files|code) (is |are )?(shown|given|provided)\b",
+    re.IGNORECASE)
+
+
+def leaks_prompt(text: str) -> bool:
+    return bool(_PROMPT_LEAK.search(text))
 
 
 def has_repetition_loop(text: str) -> bool:
@@ -128,7 +157,7 @@ def _transcript(request: str, context: str, steps: List[Step]) -> str:
         parts.append(f"Project context: {context}")
     parts.append("")
     if not steps:
-        parts.append("Session so far: empty. This is the first step.")
+        parts.append("This is the first step.")
     else:
         parts.append("Session so far:")
         for i, s in enumerate(steps, 1):
@@ -138,33 +167,46 @@ def _transcript(request: str, context: str, steps: List[Step]) -> str:
     return "\n".join(parts)
 
 
-def _parse_step(raw) -> Optional[dict]:
+_MALFORMED = ("it was not one JSON object with \"thinking\", \"action\" (eval or apply) "
+              "and \"code\" or \"diff\"")
+_LEAKY = ("the thinking talked about the instructions, eval counts or the session "
+          "starting empty; write it as your own reasoning about the task")
+
+
+def _parse_step(raw):
+    """(step, None) or (None, why it was rejected)."""
     try:
-        step = json.loads(raw) if isinstance(raw, str) else raw
+        # strict=False: generators put raw newlines inside JSON strings. Only
+        # the first object counts; a reply that runs on into more steps
+        # didn't see their results.
+        step = (json.JSONDecoder(strict=False).raw_decode(raw.lstrip())[0]
+                if isinstance(raw, str) else raw)
     except ValueError:
-        return None
+        return None, _MALFORMED
     if isinstance(step, list):
         step = step[0] if step else None
     if not isinstance(step, dict):
-        return None
+        return None, _MALFORMED
     thinking = str(step.get("thinking") or "").strip()
     action = step.get("action")
-    if not thinking or action not in ("eval", "apply"):
-        return None
     body = str(step.get("code" if action == "eval" else "diff") or "")
-    if not body.strip():
-        return None
-    return {"thinking": thinking, "action": action, "body": body}
+    if not thinking or action not in ("eval", "apply") or not body.strip():
+        return None, _MALFORMED
+    if leaks_prompt(thinking):
+        return None, _LEAKY
+    return {"thinking": thinking, "action": action, "body": body}, None
 
 
 def _next_step(llm: LLMProvider, prompt: str) -> Optional[dict]:
-    """One generated step; a malformed reply gets one retry."""
+    """One generated step; a rejected reply gets one retry, told what was wrong."""
+    attempt = prompt
     for _ in range(2):
-        raw = llm.call(system_prompt=LIVE_SYSTEM, user_prompt=prompt, temperature=0.5,
-                       max_tokens=4096, require_json=True, reject_truncated=True)
-        step = _parse_step(raw)
+        raw = llm.call(system_prompt=LIVE_SYSTEM, user_prompt=attempt, temperature=0.5,
+                       max_tokens=8192, require_json=True, reject_truncated=True)
+        step, why = _parse_step(raw)
         if step is not None:
             return step
+        attempt = f"{prompt}\n\nYour last reply was rejected: {why}. Reply again with one step."
     return None
 
 
@@ -192,16 +234,23 @@ def run_live_trace(
                 step = _next_step(llm, _transcript(request, context, trace.steps))
             except LLMAuthError:
                 raise
-            except LLMError:
+            except LLMError as e:
+                _dropped(f"generation failed: {type(e).__name__}")
                 return None
-            if step is None or has_repetition_loop(step["thinking"] + "\n" + step["body"]):
+            if step is None:
+                _dropped("malformed step")
+                return None
+            if has_repetition_loop(step["thinking"] + "\n" + step["body"]):
+                _dropped("repetition loop")
                 return None
 
             if step["action"] == "apply":
                 if len(trace.steps) < min_evals:
+                    _dropped(f"applied before {min_evals} evals")
                     return None
                 repaired = repair_trace_diff(";; apply:\n" + step["body"])
                 if repaired is None:
+                    _dropped("diff is not a valid patch")
                     return None
                 trace.final_thinking = step["thinking"]
                 trace.diff = repaired[len(";; apply:\n"):]
@@ -209,8 +258,10 @@ def run_live_trace(
 
             result = session.eval(step["body"])
             if not session.alive:
+                _dropped("session lost")
                 return None
             trace.steps.append(Step(step["thinking"], step["body"], result))
+        _dropped(f"no apply within {max_steps} steps")
         return None
     finally:
         session.close()
@@ -223,14 +274,33 @@ def _ends_clean(trace: LiveTrace) -> bool:
     return bool(checks) and checks[-1].ok
 
 
-def _new_files_load(trace: LiveTrace, session_factory: Callable[[], JoltSession]) -> bool:
-    """Every file the diff creates loads in a fresh session, in diff order."""
+def _ns_name(content: str) -> Optional[str]:
+    forms = top_level_forms(content)
+    if forms and forms[0].startswith("("):
+        head = forms[0][1:].split(None, 2)
+        if len(head) >= 2 and head[0] == "ns":
+            return head[1].rstrip(")")
+    return None
+
+
+def _new_files_load(trace: LiveTrace, session_factory: Callable[..., JoltSession]) -> bool:
+    """Every file the diff creates loads the way a project would load it: the
+    files sit on the session's source path and each namespace is required, so
+    a test file can require its source and a namespace must match its path."""
     files = new_file_contents(trace.diff)
     if not files:
         return True
-    session = session_factory()
     try:
-        return all(session.eval(content).ok for content in files.values())
+        session = session_factory(files=files)
+    except ValueError:
+        return False      # a path outside the project
+    try:
+        for content in files.values():
+            ns = _ns_name(content)
+            code = f"(require '{ns})" if ns else content
+            if not session.eval(code).ok:
+                return False
+        return True
     finally:
         session.close()
 
@@ -242,9 +312,16 @@ def accept_trace(trace: Optional[LiveTrace], session_factory: Callable[[], JoltS
     Kept only if it reaches a working end state, at least ``min_pass_rate`` of
     its evals ran cleanly, and the files its diff creates load.
     """
-    if trace is None or not _ends_clean(trace):
+    if trace is None:
+        return None
+    if not _ends_clean(trace):
+        _dropped("last check failed")
         return None
     pass_rate = sum(s.result.ok for s in trace.steps) / len(trace.steps)
-    if pass_rate < min_pass_rate or not _new_files_load(trace, session_factory):
+    if pass_rate < min_pass_rate:
+        _dropped(f"pass rate under {min_pass_rate}")
+        return None
+    if not _new_files_load(trace, session_factory):
+        _dropped("diff's new files don't load")
         return None
     return pass_rate

@@ -37,7 +37,7 @@ class _Session:
 
 
 def _factory(failing=()):
-    return lambda: _Session(failing)
+    return lambda **kw: _Session(failing)
 
 
 class TestGenerateTrainingExamples:

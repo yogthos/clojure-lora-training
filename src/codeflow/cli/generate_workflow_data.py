@@ -24,6 +24,7 @@ from pathlib import Path
 from src.llm.env import provider_from_env
 from src.shared import load_jsonl, trim_torn_tail
 from src.codeflow.synthetic.jolt_eval import JoltSession, jolt_available
+from src.codeflow.synthetic.live_trace import drop_counts
 from src.codeflow.synthetic.prompt_mining import MinedPrompt, mine_prompts
 from src.codeflow.synthetic.workflow_gen import generate_workflows_concurrent
 
@@ -165,6 +166,8 @@ def main() -> int:
     kept = len(results)
     print(f"Generated {kept} workflows "
           f"({len(todo) - kept} dropped)", file=sys.stderr)
+    for reason, n in sorted(drop_counts().items(), key=lambda kv: -kv[1]):
+        print(f"  dropped {n}: {reason}", file=sys.stderr)
     print(f"Output: {out}", file=sys.stderr)
     return 0
 

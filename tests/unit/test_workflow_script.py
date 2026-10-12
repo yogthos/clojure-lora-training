@@ -29,7 +29,8 @@ class _CountingLLM:
             return json.dumps({"user_prompt": f"please {msg}", "project_context": "a lib"})
         n = user_prompt.count("--- step ")
         if n == 0:
-            self.started.add(user_prompt)   # a retry repeats the same prompt
+            # a retry is the same prompt plus why the last reply was rejected
+            self.started.add(user_prompt.split("\n\nYour last reply was rejected")[0])
         if "drop me" in user_prompt:
             return "no step here"   # malformed every time: dropped
         if n < 3:
@@ -39,6 +40,9 @@ class _CountingLLM:
 
 class _Session:
     alive = True
+
+    def __init__(self, **kw):
+        pass
 
     def eval(self, code):
         from src.codeflow.synthetic.jolt_eval import EvalResult

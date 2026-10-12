@@ -48,7 +48,7 @@ def write_rationale(record: dict, llm: LLMProvider) -> Optional[str]:
         except LLMError:
             return None
         try:
-            data = json.loads(raw) if isinstance(raw, str) else raw
+            data = json.loads(raw, strict=False) if isinstance(raw, str) else raw
         except ValueError:
             continue
         text = str(data.get("reasoning", "")).strip() if isinstance(data, dict) else ""

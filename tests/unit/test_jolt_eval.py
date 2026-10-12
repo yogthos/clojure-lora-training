@@ -214,3 +214,20 @@ class TestJoltSession:
             assert "memory" in r.error
             assert not s.alive
             assert s.eval("(+ 1 1)").error == "not run: session lost"
+
+
+@needs_jolt
+class TestSessionFiles:
+    def test_files_are_on_the_source_path(self):
+        from src.codeflow.synthetic.jolt_eval import JoltSession
+        files = {"src/a/core.clj": "(ns a.core)\n(defn f [] 42)\n",
+                 "test/a/core_test.clj": "(ns a.core-test (:require [a.core :refer [f]]))\n(def r (f))\n"}
+        with JoltSession(files=files) as s:
+            assert s.eval("(require 'a.core-test)").ok
+            assert s.eval("a.core-test/r").value == "42"
+
+    def test_paths_outside_the_workdir_are_refused(self):
+        from src.codeflow.synthetic.jolt_eval import JoltSession
+        for bad in ("../x.clj", "/tmp/x.clj"):
+            with pytest.raises(ValueError):
+                JoltSession(files={bad: "(ns x)"})

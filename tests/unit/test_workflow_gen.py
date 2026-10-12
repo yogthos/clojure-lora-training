@@ -48,7 +48,7 @@ class _FakeSession:
 
 
 def _factory(answers=None):
-    return lambda: _FakeSession(answers)
+    return lambda **kw: _FakeSession(answers)
 
 
 _PROMPT = MinedPrompt(
@@ -95,9 +95,8 @@ class TestGenerateOne:
     def test_new_file_that_does_not_load_is_dropped(self):
         # The diff's file is loaded in a fresh session; a diff that doesn't
         # match the code that ran is caught here.
-        bad = _DIFF.replace("(count r)))", "(count r))")
-        answers = {"(ns csv)\n(defn valid-row? [r] (= 3 (count r))\n": _err("")}
-        assert generate_one(_PROMPT, _StepLLM(diff=bad), session_factory=_factory(answers)) is None
+        answers = {"(require 'csv)": _err("")}
+        assert generate_one(_PROMPT, _StepLLM(), session_factory=_factory(answers)) is None
 
     def test_llm_errors_drop_auth_errors_raise(self):
         class _Fail:
