@@ -65,3 +65,11 @@ def test_keys_are_llamafactory_arguments(config):
                                hparams.GeneratingArguments])
     known = {a.dest for a in parser._actions}
     assert set(config) - known == set()
+
+
+def test_split_renders_with_the_trained_model(config):
+    import sys
+    from unittest.mock import patch
+    from src.codeflow.cli.split_codeflow_dataset import parse_args
+    with patch.object(sys, "argv", ["s", "-i", "a", "--train-out", "t", "--val-out", "v"]):
+        assert parse_args().tokenizer == config["model_name_or_path"]

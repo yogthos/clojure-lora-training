@@ -128,3 +128,11 @@ def test_repo_is_kept_for_the_grouped_split():
     from src.codeflow.assembly.formatter import format_record
     assert format_record({"instruction": "i", "output": "o", "repo": "o__lib"})["repo"] == "o__lib"
     assert format_record({"instruction": "i", "output": "o"})["repo"] == ""
+
+
+def test_conversations_and_tools_are_kept():
+    from src.codeflow.assembly.formatter import format_record
+    conv = [{"from": "human", "value": "x"}, {"from": "gpt", "value": "y"}]
+    out = format_record({"instruction": "x", "output": "y", "conversations": conv, "tools": "[]"})
+    assert out["conversations"] == conv and out["tools"] == "[]"
+    assert "conversations" not in format_record({"instruction": "x", "output": "y"})

@@ -29,3 +29,34 @@ def test_counts_the_whole_rendered_example():
     assert kept == [rec] and dropped == []
     kept, dropped = filter_by_tokens([rec], _CharTokenizer(), cutoff_len=n - 1)
     assert kept == [] and dropped == [n]
+
+
+def test_multi_turn_record_becomes_tool_messages():
+    from src.codeflow.synthetic.jolt_eval import EvalResult
+    from src.codeflow.synthetic.live_trace import EVAL_TOOL, LiveTrace, Step
+    rec = LiveTrace(request="sq", context="", diff="d",
+                    steps=[Step("why", "(sq 2)", EvalResult(form="", value="4"))],
+                    final_thinking="done").to_record()
+    rec["system"] = "S"
+    msgs = record_messages(rec)
+    assert [m["role"] for m in msgs] == ["system", "user", "assistant", "tool", "assistant"]
+    assert msgs[2]["reasoning_content"] == "why"
+    assert msgs[2]["tool_calls"] == [{"type": "function", "function": {
+        "name": "eval", "arguments": {"code": "(sq 2)"}}}]
+    assert msgs[3]["content"] == "=> 4"
+    assert msgs[4] == {"role": "assistant", "reasoning_content": "done", "content": ";; apply:\nd"}
+
+
+def test_tools_reach_the_template():
+    from src.codeflow.assembly.token_length import count_tokens
+    seen = {}
+
+    class _Tok:
+        def apply_chat_template(self, messages, tokenize=False, tools=None, **kw):
+            seen["tools"] = tools
+            return {"input_ids": [1, 2, 3]}
+
+    count_tokens({"instruction": "i", "output": "o", "tools": '[{"type": "function"}]',
+                  "conversations": [{"from": "human", "value": "i"}, {"from": "gpt", "value": "o"}]},
+                 _Tok())
+    assert seen["tools"] == [{"type": "function"}]

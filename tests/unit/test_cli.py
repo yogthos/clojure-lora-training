@@ -114,15 +114,12 @@ class TestMainIntegration:
             output = dpath / "merged.jsonl"
             report = dpath / "report.json"
 
-            # Write git-mined records
+            # Write git-mined records (reasoning already backfilled)
             _write_jsonl(git_dir / "data.jsonl", [
                 {
                     "instruction": "refactor middleware to use comp for handler composition",
                     "output": (
-                        ";; nREPL session:\n"
-                        ";; eval: (require '[ring.middleware.json :refer [wrap-json-response]])\n"
-                        ";; result: nil\n"
-                        ";; apply:\n"
+                        "<think>\nCompose the JSON middleware into the request chain.\n</think>\n\n"
                         "diff --git a/src/handler.clj b/src/handler.clj\n"
                         "--- a/src/handler.clj\n"
                         "+++ b/src/handler.clj\n"
@@ -141,33 +138,18 @@ class TestMainIntegration:
                 },
             ])
 
-            # Write synthetic records
-            _write_jsonl(synth_dir / "data.jsonl", [
-                {
-                    "instruction": "fix null pointer exception in request handler",
-                    "output": (
-                        ";; nREPL session:\n"
-                        ";; eval: (defn safe-handler [request]\n"
-                        ";;        (when request (handle request)))\n"
-                        ";; result: #'user/safe-handler\n"
-                        ";; apply:\n"
-                        "diff --git a/src/handler.clj b/src/handler.clj\n"
-                        "--- a/src/handler.clj\n"
-                        "+++ b/src/handler.clj\n"
-                        "@@ -10,6 +10,8 @@\n"
-                        " (defn app [request]\n"
-                        "-  (handle-that-may-be-nil request))\n"
-                        "-\n"
-                        "-(def handler app)\n"
-                        "+  (some-> request\n"
-                        "+          validate\n"
-                        "+          handle-that-may-be-nil))\n"
-                        "+\n"
-                        "+(def handler (wrap-errors app))\n"
-                    ),
-                    "source": "synth",
-                },
-            ])
+            # Write a live synthetic trace
+            from src.codeflow.synthetic.jolt_eval import EvalResult
+            from src.codeflow.synthetic.live_trace import LiveTrace, Step
+            trace = LiveTrace(
+                request="fix null pointer exception in request handler", context="",
+                steps=[Step("Guard nil first.", "(defn safe [r] (when r (:body r)))",
+                            EvalResult(form="", value="#'user/safe")),
+                       Step("Try nil.", "(safe nil)", EvalResult(form="", value="nil"))],
+                final_thinking="Nil is handled; write it.",
+                diff=("diff --git a/src/safe.clj b/src/safe.clj\n--- /dev/null\n+++ b/src/safe.clj\n"
+                      "@@ -0,0 +1,2 @@\n+(ns safe)\n+(defn safe [r] (when r (:body r)))\n"))
+            _write_jsonl(synth_dir / "data.jsonl", [trace.to_record()])
 
             with patch("sys.argv", [
                 "assemble_codeflow_dataset",
@@ -182,6 +164,7 @@ class TestMainIntegration:
             assert output.exists()
 
             # Verify output is valid JSONL
+            kinds = set()
             with open(output) as f:
                 for line in f:
                     rec = json.loads(line.strip())
@@ -192,12 +175,14 @@ class TestMainIntegration:
                     assert rec["history"] == []
                     # Extra fields should be stripped by format step
                     assert "source" not in rec
+                    kinds.add("conversations" in rec)
 
             # Verify validation report
             assert report.exists()
             with open(report) as f:
                 rpt = json.load(f)
-            assert rpt["summary"]["valid"] >= 1
+            assert rpt["summary"]["valid"] == 2
+            assert kinds == {True, False}     # one multi-turn, one transition
 
     def test_empty_inputs(self):
         with TemporaryDirectory() as d:

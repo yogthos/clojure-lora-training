@@ -56,6 +56,13 @@ class TestFilterTrivialDiffs:
         assert filter_trivial_diffs(recs, min_changed_lines=4) == recs
 
 
+def _live(instruction, output):
+    """A synthetic multi-turn trace record (only those survive assembly)."""
+    return {"instruction": instruction, "output": output, "tools": "[]",
+            "conversations": [{"from": "human", "value": instruction},
+                              {"from": "gpt", "value": output}]}
+
+
 def _write_jsonl(path: Path, records: list[dict]) -> None:
     with open(path, "w") as f:
         for rec in records:
@@ -309,7 +316,7 @@ class TestAssembleDataset:
                 {"instruction": "fix null bug", "output": "diff-g"},
             ])
             _write_jsonl(synth_dir / "s.jsonl", [
-                {"instruction": "add feature endpoint", "output": "diff-s"},
+                _live("add feature endpoint", "diff-s"),
             ])
             result = assemble_dataset(
                 git_paths=[git_dir], synth_paths=[synth_dir],
@@ -370,7 +377,7 @@ class TestAssembleDataset:
             ])
             # 30 synthetic records that also classify as bug-fix.
             _write_jsonl(synth_dir / "s.jsonl", [
-                {"instruction": f"resolve crash {i}", "output": "diff"}
+                _live(f"resolve crash {i}", "diff")
                 for i in range(30)
             ])
 
@@ -397,7 +404,7 @@ class TestAssembleDataset:
                 for i in range(60)
             ])
             _write_jsonl(synth_dir / "s.jsonl", [
-                {"instruction": f"build thing {i}", "output": ";; Goal: x"}
+                _live(f"build thing {i}", ";; Goal: x")
                 for i in range(60)
             ])
             result = assemble_dataset(
@@ -419,19 +426,28 @@ _BAD_COUNTS = (";; eval: (+ 1 2)\n;; result: 3\n;; apply:\n"
                "@@ -1,5 +1,9 @@\n (ns f)\n-(def a 1)\n+(def a 2)\n")
 
 
-def test_synthetic_hunk_counts_are_repaired(tmp_path):
-    # Older traces predate the generator's header repair; their bodies are
-    # fine, only the @@ counts are off.
-    git, synth = tmp_path / "git", tmp_path / "synth"
-    git.mkdir(); synth.mkdir()
-    _write_jsonl(synth / "s.jsonl", [{"instruction": "bump a", "output": _BAD_COUNTS}])
-    _write_jsonl(git / "g.jsonl", [{"instruction": "bump b", "output": _BAD_COUNTS[40:]}])
-    out = assemble_dataset([git], [synth], tmp_path / "o.jsonl", min_changed_lines=0)
-    by_src = {r["source"]: r["output"] for r in out}
-    assert "@@ -1,2 +1,2 @@" in by_src["synthetic"]
-    assert "@@ -1,5 +1,9 @@" in by_src["git"]   # mined diffs are re-mined, not patched
-
-
 def test_multi_message_ties_prefer_bug_fix():
     ex = {"instruction": "Remove unneeded expiry test; Fix admin logic; Refactor for readability"}
     assert classify_example(ex) == "bug-fix"
+
+
+def test_one_shot_synthetic_traces_are_dropped(tmp_path):
+    # Their ;; result: lines sit in the loss as text the model would learn to
+    # write; only live multi-turn traces are kept.
+    git, synth = tmp_path / "git", tmp_path / "synth"
+    git.mkdir(); synth.mkdir()
+    conv = [{"from": "human", "value": "a"}, {"from": "gpt", "value": "b"}]
+    _write_jsonl(synth / "s.jsonl", [
+        {"instruction": "one shot", "output": _BAD_COUNTS},
+        {"instruction": "live", "output": "b", "conversations": conv, "tools": "[]"},
+    ])
+    _write_jsonl(git / "g.jsonl", [])
+    out = assemble_dataset([git], [synth], tmp_path / "o.jsonl", min_changed_lines=0)
+    assert [r["instruction"] for r in out] == ["live"]
+
+
+def test_length_prefilter_counts_every_turn():
+    conv = [{"from": "human", "value": "a"}, {"from": "observation", "value": "x" * 2000},
+            {"from": "gpt", "value": "b"}]
+    rec = {"instruction": "a", "output": "b", "conversations": conv}
+    assert filter_by_length([rec], max_chars=1000) == []

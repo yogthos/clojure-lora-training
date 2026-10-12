@@ -16,7 +16,6 @@ from ...shared import (
     TRANSITION_SYSTEM_PROMPTS,
     WORKFLOW_SYSTEM_PROMPTS,
 )
-from ..diffs import repair_trace_diff
 from ..git_mining.miner import clean_instruction
 
 # ── Classification keyword sets ──────────────────────────────────────────
@@ -126,10 +125,11 @@ def deduplicate(records: List[dict]) -> List[dict]:
 def _example_chars(record: dict) -> int:
     """Total character length of the trainable fields of an example.
 
-    Counts instruction + input + output. The system prompt is a constant
-    preamble, so it is excluded — what matters here is the per-example payload
-    that has to fit inside the training context window.
+    Counts instruction + input + output, or every turn of a multi-turn trace.
+    A cheap pre-filter; the exact check is the token filter (token_length.py).
     """
+    if record.get("conversations"):
+        return sum(len(t.get("value", "")) for t in record["conversations"])
     return (
         len(record.get("instruction", ""))
         + len(record.get("input", ""))
@@ -303,14 +303,10 @@ def assemble_dataset(
         if rec.get("instruction"):
             rec["instruction"] = clean_instruction(rec["instruction"])
 
-    # Synthetic traces generated before the generator repaired @@ counts have
-    # sound bodies with wrong headers; give them the same repair. Mined diffs
-    # with bad counts lost content in the old miner and need re-mining.
-    for rec in records:
-        if rec["source"] == "synthetic":
-            repaired = repair_trace_diff(rec.get("output", ""))
-            if repaired is not None:
-                rec["output"] = repaired
+    # One-shot synthetic traces put ;; result: lines in the loss, teaching the
+    # model to write REPL output instead of waiting for it. Only live
+    # multi-turn traces (observations masked) are kept; regenerate older sets.
+    records = [r for r in records if r["source"] != "synthetic" or r.get("conversations")]
 
     records = deduplicate(records)
     records = filter_by_length(records, max_chars=max_chars)

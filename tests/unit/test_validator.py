@@ -15,6 +15,9 @@ from src.codeflow.assembly.validator import (
 )
 
 
+_THINK = "<think>\nThe handler should return a response map.\n</think>\n\n"
+
+
 class TestCheckClojureSyntax:
     def test_valid_forms_pass(self):
         code = "(defn foo [x] (+ x 1))\n(def bar {:key \"val\"})"
@@ -157,10 +160,7 @@ class TestValidateExample:
         rec = {
             "instruction": "refactor the middleware to use comp",
             "output": (
-                ";; nREPL session:\n"
-                ";; eval: (require '[ring.middleware])\n"
-                ";; result: nil\n"
-                ";; apply:\n"
+                "<think>\nWrap the response as JSON in the middleware chain.\n</think>\n\n"
                 "diff --git a/src/handler.clj b/src/handler.clj\n"
                 "--- a/src/handler.clj\n"
                 "+++ b/src/handler.clj\n"
@@ -258,7 +258,7 @@ class TestStrictDiffGate:
 
     def test_good_diff_is_valid(self):
         from src.codeflow.assembly.validator import validate_example
-        assert validate_example(self._ex(self.GOOD)).is_valid
+        assert validate_example(self._ex(_THINK + self.GOOD)).is_valid
 
     def test_bad_hunk_counts_are_invalid(self):
         from src.codeflow.assembly.validator import validate_example
@@ -285,7 +285,7 @@ class TestValidateJsonlFiltering:
         good = {
             "instruction": "Fix the ring handler in app.core to return a 200 response map",
             "input": "",
-            "output": TestStrictDiffGate.GOOD,
+            "output": _THINK + TestStrictDiffGate.GOOD,
         }
         bad = dict(good, output=TestStrictDiffGate.GOOD.replace("@@ -1,2 +1,2 @@", "@@ -1,9 +1,9 @@"))
         src = tmp_path / "in.jsonl"
@@ -302,3 +302,67 @@ class TestValidateJsonlFiltering:
         write_jsonl([{"instruction": "x", "output": "y"}], src)
         validate_jsonl_file(src, tmp_path / "report.json")
         assert not (tmp_path / "out.jsonl").exists()
+
+
+def _live_record(**over):
+    from src.codeflow.synthetic.jolt_eval import EvalResult
+    from src.codeflow.synthetic.live_trace import LiveTrace, Step
+    diff = ("diff --git a/src/sq.clj b/src/sq.clj\n--- /dev/null\n+++ b/src/sq.clj\n"
+            "@@ -0,0 +1,2 @@\n+(ns sq)\n+(defn square [x] (* x x))\n")
+    steps = [Step("Plan: define square, check it.", "(defn square [x] (* x x))",
+                  EvalResult(form="", value="#'user/square")),
+             Step("Check a value.", "(square 4)", EvalResult(form="", value="16"))]
+    rec = LiveTrace(request="add a square function to the math helpers", context="",
+                    steps=steps, final_thinking="Works; write it.", diff=diff).to_record()
+    rec.update(over)
+    return rec
+
+
+class TestMultiTurnValidation:
+    def test_live_trace_is_valid(self):
+        r = validate_example(_live_record())
+        assert r.is_valid, r.to_dict()
+
+    def test_eval_code_is_syntax_checked(self):
+        rec = _live_record()
+        call = rec["conversations"][1]
+        call["value"] = call["value"].replace("(* x x))", "(* x x)")
+        assert validate_example(rec).syntax_errors
+
+    def test_function_call_needs_reasoning(self):
+        rec = _live_record()
+        rec["conversations"][3]["value"] = rec["conversations"][3]["value"].split("</think>\n\n")[1]
+        r = validate_example(rec)
+        assert not r.is_valid and any("reasoning" in e for e in r.format_errors)
+
+    def test_function_call_must_be_an_eval_call(self):
+        rec = _live_record()
+        rec["conversations"][1]["value"] = "<think>\nx\n</think>\n\n{\"name\": \"shell\"}"
+        assert not validate_example(rec).is_valid
+
+    def test_turn_order(self):
+        rec = _live_record()
+        conv = rec["conversations"]
+        conv[1], conv[2] = conv[2], conv[1]
+        r = validate_example(rec)
+        assert not r.is_valid and r.format_errors
+
+    def test_final_turn_applies_a_diff(self):
+        rec = _live_record()
+        final = rec["conversations"][-1]
+        final["value"] = final["value"].replace(";; apply:\n", "")
+        rec["output"] = final["value"]
+        assert not validate_example(rec).is_valid
+
+
+class TestTransitionReasoning:
+    _DIFF = ("diff --git a/src/core.clj b/src/core.clj\n--- a/src/core.clj\n+++ b/src/core.clj\n"
+             "@@ -1,2 +1,2 @@\n (ns core)\n-(defn parse [x] x)\n+(defn parse [x] (when x x))\n")
+
+    def test_transition_with_reasoning_is_valid(self):
+        out = "<think>\nparse must tolerate nil input.\n</think>\n\n" + self._DIFF
+        assert validate_example({"instruction": "handle nil in parse fn", "output": out}).is_valid
+
+    def test_transition_without_reasoning_is_invalid(self):
+        r = validate_example({"instruction": "handle nil in parse fn", "output": self._DIFF})
+        assert not r.is_valid and any("reasoning" in e for e in r.format_errors)

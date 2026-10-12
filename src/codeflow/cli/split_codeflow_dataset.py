@@ -1,8 +1,8 @@
-"""Split the assembled codeflow dataset into stratified train/val files.
+"""Split the assembled codeflow dataset into train/val files for LLaMA-Factory.
 
-Stratifies by training objective (transition vs workflow) and change type so
-both splits carry the same mix, and verifies there is no record leakage across
-the boundary.
+Splits by groups of related records (same repo, input or instruction),
+stratified by training objective and change type, verifies nothing leaks
+across the boundary, and writes sharegpt records.
 
 Usage:
     python scripts/split_codeflow_dataset.py \\
@@ -19,6 +19,8 @@ from pathlib import Path
 
 
 from src.shared import load_jsonl, write_jsonl
+from src.codeflow.assembly.sharegpt import to_sharegpt
+from src.codeflow.assembly.token_length import load_tokenizer
 from src.codeflow.assembly.splitter import (
     stratified_split,
     assert_no_leakage,
@@ -38,6 +40,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--val-frac", type=float, default=0.05,
                    help="Fraction held out for validation (default 0.05)")
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--tokenizer", default="Qwen/Qwen3.6-27B", metavar="NAME",
+                   help="Tokenizer of the model being trained; its chat template renders "
+                        "the tools block of multi-turn records (default: Qwen/Qwen3.6-27B)")
     return p.parse_args()
 
 
@@ -51,8 +56,11 @@ def main() -> int:
     train, val = stratified_split(records, val_frac=args.val_frac, seed=args.seed)
     assert_no_leakage(train, val)  # raises on overlap
 
-    write_jsonl(train, args.train_out)
-    write_jsonl(val, args.val_out)
+    # The split needs the flat fields (repo, instruction); the files LLaMA-
+    # Factory reads are sharegpt (configs/dataset_info.codeflow.json).
+    tokenizer = load_tokenizer(args.tokenizer) if any(r.get("tools") for r in records) else None
+    write_jsonl([to_sharegpt(r, tokenizer) for r in train], args.train_out)
+    write_jsonl([to_sharegpt(r, tokenizer) for r in val], args.val_out)
 
     print(f"Total {len(records)} -> train {len(train)} / val {len(val)} "
           f"(val_frac={args.val_frac}, no leakage)")

@@ -38,6 +38,7 @@ class ValidationResult:
     total_score: float = 0.0
     syntax_errors: List[str] = field(default_factory=list)
     diff_errors: List[str] = field(default_factory=list)
+    format_errors: List[str] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
     instruction_score: float = 0.0
     syntax_score: float = 0.0
@@ -52,6 +53,7 @@ class ValidationResult:
             "diff_score": self.diff_score,
             "syntax_errors": self.syntax_errors,
             "diff_errors": self.diff_errors,
+            "format_errors": self.format_errors,
             "warnings": self.warnings,
         }
 
@@ -154,6 +156,63 @@ def score_relevance(instruction: str) -> float:
     return min(score, 1.0)
 
 
+# ── Turn structure ───────────────────────────────────────────────────────
+
+_THINK_OPEN, _THINK_CLOSE = "<think>\n", "\n</think>\n\n"
+
+
+def split_think(text: str) -> Optional[Tuple[str, str]]:
+    """(reasoning, content) of an assistant turn that opens with a closed,
+    non-empty ``<think>`` block, else None."""
+    if not text.startswith(_THINK_OPEN) or _THINK_CLOSE not in text:
+        return None
+    reasoning, content = text[len(_THINK_OPEN):].split(_THINK_CLOSE, 1)
+    return (reasoning, content) if reasoning.strip() else None
+
+
+def _eval_code(content: str) -> Optional[str]:
+    """The code of an ``eval`` tool call, or None if it isn't one."""
+    try:
+        call = json.loads(content)
+    except ValueError:
+        return None
+    if not isinstance(call, dict) or call.get("name") != "eval":
+        return None
+    code = (call.get("arguments") or {}).get("code")
+    return code if isinstance(code, str) and code.strip() else None
+
+
+def _conversation_errors(conv: List[dict]) -> Tuple[List[str], List[str]]:
+    """(format errors, eval code) for a multi-turn record.
+
+    Order: human, then (function_call, observation) pairs, then a final gpt
+    turn that applies a diff. Every assistant turn opens with reasoning.
+    """
+    errors: List[str] = []
+    codes: List[str] = []
+    roles = [t.get("from") for t in conv]
+    pairs_ok = all(roles[i:i + 2] == ["function_call", "observation"] for i in range(1, len(roles) - 1, 2))
+    if len(roles) < 4 or roles[0] != "human" or roles[-1] != "gpt" or len(roles) % 2 or not pairs_ok:
+        errors.append(f"turns are not human, (function_call, observation)*, gpt: {roles}")
+        return errors, codes
+    for n, turn in enumerate(conv[1:], 1):
+        if turn["from"] == "observation":
+            continue
+        parts = split_think(turn.get("value", ""))
+        if parts is None:
+            errors.append(f"assistant turn {n} has no reasoning (<think>...</think>)")
+            continue
+        if turn["from"] == "function_call":
+            code = _eval_code(parts[1])
+            if code is None:
+                errors.append(f"turn {n} is not an eval tool call")
+            else:
+                codes.append(code)
+        elif not parts[1].startswith(";; apply:\n"):
+            errors.append("final turn does not start with ';; apply:'")
+    return errors, codes
+
+
 # ── Full example validation ──────────────────────────────────────────────
 
 def validate_example(example: dict, min_score: float = 0.4) -> ValidationResult:
@@ -185,8 +244,15 @@ def validate_example(example: dict, min_score: float = 0.4) -> ValidationResult:
         if result.instruction_score < 0.2:
             result.warnings.append(f"low instruction relevance: {result.instruction_score:.2f}")
 
-    # Clojure syntax — check code blocks in output
-    code_blocks = _extract_code_blocks(output)
+    conv = example.get("conversations")
+    if conv:
+        result.format_errors, code_blocks = _conversation_errors(conv)
+    else:
+        code_blocks = _extract_code_blocks(output)
+        if split_think(output) is None:
+            result.format_errors.append("output has no reasoning (<think>...</think>)")
+
+    # Clojure syntax in the evaluated code
     if code_blocks:
         all_syntax_ok = True
         for code in code_blocks:
@@ -215,7 +281,8 @@ def validate_example(example: dict, min_score: float = 0.4) -> ValidationResult:
     result.total_score = round(result.total_score, 2)
 
     # A corrupt patch is unusable training data whatever else scores well.
-    result.is_valid = result.total_score >= min_score and not result.diff_errors
+    result.is_valid = (result.total_score >= min_score and not result.diff_errors
+                       and not result.format_errors)
     return result
 
 
