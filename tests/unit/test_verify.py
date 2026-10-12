@@ -277,3 +277,15 @@ class TestExtraCloserIsARealReplError:
         assert blocks[0].form == "(defn f []\n  1))"
         assert not blocks[0].malformed
         assert blocks[1].form == "(f)"
+
+
+class TestGroundingKeepsBytes:
+    def test_form_feed_and_trailing_newline_survive(self):
+        from src.codeflow.synthetic.jolt_eval import EvalResult
+        from src.codeflow.synthetic.verify import extract_eval_blocks, ground_solution
+        sol = (";; eval: (+ 1 2)\n;; result: ?\n;; apply:\n"
+               "diff --git a/f.clj b/f.clj\n--- a/f.clj\n+++ b/f.clj\n"
+               "@@ -1,2 +1,2 @@\n \x0c\n-(def x 1)\n+(def x 2)\n")
+        blocks = extract_eval_blocks(sol)
+        out = ground_solution(sol, blocks, [EvalResult(form="(+ 1 2)", value="3")])
+        assert out == sol.replace(";; result: ?", ";; result: 3")

@@ -8,7 +8,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from ..diffs import apply_section_errors, check_patch, extract_diff
+from ..clj_text import bracket_errors
+from ..diffs import apply_section_errors, check_patch, extract_diff, split_lines
 from ...shared import write_jsonl
 from .assembler import load_jsonl
 
@@ -58,63 +59,14 @@ class ValidationResult:
 # ── Clojure syntax check ─────────────────────────────────────────────────
 
 def check_clojure_syntax(code: str) -> List[str]:
-    """Check basic Clojure syntax validity.
+    """Check that brackets in Clojure code pair up and strings are closed.
 
-    Checks for balanced parentheses and basic form structure.
-    Does NOT do full parsing — just checks that parens balance
-    and common structural issues are caught.
+    Not a full parse: strings, character literals and comments are skipped,
+    and ``()``, ``[]`` and ``{}`` must nest correctly.
 
     Returns list of error messages (empty = valid).
     """
-    errors = []
-
-    depth = 0
-    in_string = False
-    in_comment = False
-    prev_char = ""
-    for i, ch in enumerate(code):
-        # End of line resets comment state
-        if ch == '\n':
-            in_comment = False
-            prev_char = ch
-            continue
-
-        # Track strings
-        if ch == '"' and prev_char != '\\':
-            in_string = not in_string
-
-        if in_string:
-            prev_char = ch
-            continue
-
-        if in_comment:
-            prev_char = ch
-            continue
-
-        # Start of a line comment
-        if ch == ';':
-            in_comment = True
-            prev_char = ch
-            continue
-
-        if ch == '(':
-            depth += 1
-        elif ch == ')':
-            depth -= 1
-            if depth < 0:
-                # Try to give a useful line number
-                line_num = code[:i].count('\n') + 1
-                errors.append(f"Unmatched closing parenthesis at line {line_num}")
-                depth = 0
-
-        prev_char = ch
-
-    if depth > 0:
-        errors.append(f"Unmatched opening parenthesis: {depth} unclosed")
-    elif depth < 0:
-        errors.append(f"Unmatched closing parenthesis: {-depth} extra")
-
-    return errors
+    return bracket_errors(code)
 
 
 # ── Diff structure check ─────────────────────────────────────────────────
@@ -268,27 +220,15 @@ def validate_example(example: dict, min_score: float = 0.4) -> ValidationResult:
 
 
 def _extract_code_blocks(text: str) -> List[str]:
-    """Extract Clojure code blocks from text.
+    """Clojure code in an output: every ``;; eval:`` form (multi-line forms
+    included) and every ```clojure fenced block."""
+    from ..synthetic.verify import extract_eval_blocks
 
-    Looks for:
-    - ;; eval: <form> patterns
-    - ```clojure ``` blocks
-    - Lines that look like top-level Clojure forms
-    """
-    blocks = []
+    blocks = [b.form for b in extract_eval_blocks(text) if b.form]
 
-    # Extract ;; eval: forms
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped.startswith(";; eval:"):
-            form = stripped[len(";; eval:"):].strip()
-            if form:
-                blocks.append(form)
-
-    # Extract ```clojure blocks
     in_clj_block = False
-    clj_lines = []
-    for line in text.splitlines():
+    clj_lines: List[str] = []
+    for line in split_lines(text):
         if line.strip().startswith("```clojure"):
             in_clj_block = True
             clj_lines = []

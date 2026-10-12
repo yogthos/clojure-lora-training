@@ -11,6 +11,8 @@ import re
 from dataclasses import dataclass
 from typing import List, Optional
 
+from ..clj_text import balance
+from ..diffs import split_lines
 from .jolt_eval import EvalResult, eval_forms
 
 _EVAL_RE = re.compile(r"^\s*;;\s*eval:\s?(.*)$")
@@ -93,33 +95,8 @@ _MAX_RESULT_CONT = 40
 
 
 def _balance(text: str):
-    """Net bracket depth of Clojure text and whether it ends inside a string.
-
-    Skips string contents, character literals (``\\(``) and ``;`` comments so
-    brackets inside them don't count.
-    """
-    depth, in_str, i, n = 0, False, 0, len(text)
-    while i < n:
-        c = text[i]
-        if in_str:
-            if c == "\\":
-                i += 1
-            elif c == '"':
-                in_str = False
-        elif c == '"':
-            in_str = True
-        elif c == "\\":
-            i += 1  # character literal: skip the escaped char
-        elif c == ";":
-            nl = text.find("\n", i)
-            i = n if nl < 0 else nl
-            continue
-        elif c in "([{":
-            depth += 1
-        elif c in ")]}":
-            depth -= 1
-        i += 1
-    return depth, in_str
+    """Net bracket depth of Clojure text and whether it ends inside a string."""
+    return balance(text)
 
 
 def _form_complete(text: str) -> bool:
@@ -137,7 +114,7 @@ def extract_eval_blocks(solution: str) -> List[EvalBlock]:
     its brackets are open, and repeated ``;; result:`` lines are absorbed so no
     fabricated result survives grounding.
     """
-    lines = solution.splitlines()
+    lines = split_lines(solution)
     blocks: List[EvalBlock] = []
     i, n = 0, len(lines)
 
@@ -210,7 +187,7 @@ def ground_solution(
 
     ``results`` pairs with the non-malformed blocks, in order.
     """
-    lines = solution.splitlines()
+    lines = split_lines(solution)
     # Map original result-line spans to their replacement text.
     replace_at = {}
     drop = set()
@@ -230,7 +207,7 @@ def ground_solution(
         if idx in drop:
             continue
         out.append(replace_at.get(idx, line))
-    return "\n".join(out)
+    return "\n".join(out) + ("\n" if solution.endswith("\n") else "")
 
 
 def _ground(solution, timeout, jolt_path, cls):

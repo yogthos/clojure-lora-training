@@ -47,6 +47,32 @@ class TestCheckClojureSyntax:
         assert len(errors) == 0
 
 
+    def test_escaped_backslash_ends_string(self):
+        assert check_clojure_syntax('(str "\\\\" "x")') == []
+
+    def test_character_literals_are_not_brackets(self):
+        assert check_clojure_syntax(r'(= c \( ) (= d \") (= e \;)') == []
+
+    def test_mismatched_bracket_types(self):
+        assert check_clojure_syntax("(let [x 1) x]")
+
+    def test_unclosed_vector(self):
+        assert check_clojure_syntax("(defn f [x (inc x))")
+
+
+class TestMultiLineEvalForms:
+    def test_multi_line_form_is_not_a_syntax_error(self):
+        out = (";; nREPL session:\n"
+               ";; eval: (defn f [x]\n"
+               ";;         (inc x))\n"
+               ";; result: #'user/f\n"
+               ";; apply:\n"
+               "diff --git a/f.clj b/f.clj\n--- /dev/null\n+++ b/f.clj\n"
+               "@@ -0,0 +1 @@\n+(defn f [x] (inc x))\n")
+        r = validate_example({"instruction": "add an increment function", "output": out})
+        assert r.syntax_errors == []
+
+
 class TestCheckDiffStructure:
     def test_well_formed_diff_passes(self):
         diff = """diff --git a/src/core.clj b/src/core.clj
