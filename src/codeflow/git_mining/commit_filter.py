@@ -4,9 +4,10 @@ import re
 from dataclasses import dataclass, field
 from typing import List
 
-# git's and GitHub's generated merge subjects. A merge still carrying one has
-# no description of its own (see miner._describe_merges).
-MERGE_SUBJECT = re.compile(r"^Merge (pull request|branch|remote-tracking branch|tag|commit)\b")
+# Generated merge subjects (git, GitHub, GitLab, Bitbucket: "Merge pull
+# request #12 ...", "Merge branch 'x'", "Merged in ..."). A merge still
+# carrying one has no description of its own (see miner._describe_merges).
+MERGE_SUBJECT = re.compile(r"^Merged?\b")
 
 
 @dataclass
