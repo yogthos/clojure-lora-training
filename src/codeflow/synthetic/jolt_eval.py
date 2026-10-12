@@ -10,7 +10,8 @@ A server process per trace (startup is ~0.15s) keeps traces isolated: jolt's
 eval namespace is process-global, so concurrent sessions in one server could
 interleave ``(ns ..)`` changes, and defs from one trace would leak into the next.
 
-Sandboxing: the server runs with a minimal environment (no API keys), in a
+Sandboxing: the server runs with a minimal environment (PATH and JOLT_*
+settings only, no API keys), in a
 throwaway work directory, and on macOS under ``sandbox-exec`` with no network
 beyond localhost, no reads of $HOME except the dependency caches, and no writes
 outside the work directory.
@@ -48,9 +49,13 @@ PRINT_LENGTH = 100
 # MB; that is not a useful training signal.
 _MAX_FIELD_CHARS = 8000
 
-# Chez grows the stack on the heap, so runaway recursion doesn't overflow — it
-# eats memory (~250MB/s) until killed. Cap the server's resident size instead.
+# A server that outgrows this resident size is killed (runaway allocation).
 DEFAULT_MAX_RSS_MB = 2048
+# Chez grows the stack on the heap. jolt throws StackOverflowError past
+# JOLT_STACK_LIMIT; peak RSS is ~2.5x the limit, so a quarter of the RSS cap
+# overflows the stack, like the JVM, well before the watchdog fires. jolt
+# releases without the setting ignore it and the watchdog catches recursion.
+_STACK_LIMIT_FRACTION = 4
 _RSS_POLL_INTERVAL = 0.25
 
 _STARTUP_TIMEOUT = 30.0
@@ -64,8 +69,38 @@ _SANDBOX_PROFILE = """(version 1)
 (allow file-write* (subpath "{workdir}") (literal "/dev/null") (literal "/dev/tty"))
 (deny file-read* (subpath "{home}"))
 (allow file-read* (literal "{home}") (subpath "{home}/.jolt") (subpath "{home}/.m2")
-       (subpath "{workdir}"))
+       (subpath "{workdir}"){extra_reads})
 """
+
+
+def _server_env(jolt_bin: str, tmpdir: str, max_rss_mb: Optional[int] = None) -> dict:
+    """The server's environment: PATH (jolt's launcher looks for Chez there),
+    jolt's own JOLT_* settings, and nothing else, so API keys stay out."""
+    env = {k: v for k, v in os.environ.items() if k.startswith("JOLT_")}
+    if max_rss_mb and "JOLT_STACK_LIMIT" not in env:
+        env["JOLT_STACK_LIMIT"] = f"{max_rss_mb // _STACK_LIMIT_FRACTION}m"
+    path = os.environ.get("PATH", "/usr/bin:/bin")
+    env.update({
+        "PATH": os.pathsep.join([str(Path(jolt_bin).parent), path]),
+        "HOME": os.path.expanduser("~"),
+        "TMPDIR": tmpdir,
+    })
+    return env
+
+
+def _sandbox_profile(workdir: str, home: str, jolt_bin: str) -> str:
+    """sandbox-exec profile. jolt's install root stays readable: a source
+    checkout under $HOME loads its own .ss files at startup. A root that
+    would expose all of $HOME is left out."""
+    root = Path(os.path.realpath(jolt_bin)).parent.parent
+    extra = ""
+    if not Path(home).is_relative_to(root):
+        extra = f' (subpath "{root}")'
+        # The launcher cd's into root, which needs the directories above it.
+        if root.is_relative_to(home):
+            extra += "".join(f' (literal "{d}")' for d in root.parents
+                             if d.is_relative_to(home) and d != Path(home))
+    return _SANDBOX_PROFILE.format(workdir=workdir, home=home, extra_reads=extra)
 
 
 @dataclass
@@ -127,17 +162,13 @@ class _JoltServer:
         tmp = Path(workdir, "tmp")
         tmp.mkdir(exist_ok=True)
         jolt_bin = shutil.which(jolt_path) or jolt_path
-        env = {
-            "PATH": os.pathsep.join([str(Path(jolt_bin).parent), "/usr/bin", "/bin"]),
-            "HOME": os.path.expanduser("~"),
-            "TMPDIR": str(tmp),
-        }
+        env = _server_env(jolt_bin, str(tmp), max_rss_mb)
         cmd = [jolt_bin, "nrepl-server", "0"]
         if sandbox:
             real = os.path.realpath(workdir)
             profile = Path(workdir, "sandbox.sb")
-            profile.write_text(_SANDBOX_PROFILE.format(
-                workdir=real, home=os.path.realpath(env["HOME"])))
+            profile.write_text(_sandbox_profile(
+                real, os.path.realpath(env["HOME"]), jolt_bin))
             cmd = ["sandbox-exec", "-f", str(profile)] + cmd
         self.proc = subprocess.Popen(
             cmd, cwd=workdir, env=env, stdin=subprocess.DEVNULL,
@@ -248,8 +279,9 @@ def eval_forms(
     killed and the remaining forms are reported as not run.
 
     ``sandbox`` defaults to on wherever ``sandbox-exec`` exists (macOS). A
-    server that grows past ``max_rss_mb`` (runaway recursion) is killed; that
-    form is reported out of memory and the rest as not run.
+    server that grows past ``max_rss_mb`` is killed; that form is reported out
+    of memory and the rest as not run. Runaway recursion throws
+    StackOverflowError first (see ``_STACK_LIMIT_FRACTION``).
     """
     if not forms:
         return []
@@ -283,7 +315,7 @@ def eval_forms(
                     raise
                 results.append(EvalResult(
                     form=form, ok=False,
-                    error=f"out of memory: server exceeded {max_rss_mb}MB (runaway recursion?)"))
+                    error=f"out of memory: server exceeded {max_rss_mb}MB"))
                 results.extend(EvalResult(form=f, ok=False, error="not run: session lost")
                                for f in forms[i + 1:])
                 break

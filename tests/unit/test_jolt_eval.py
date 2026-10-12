@@ -22,6 +22,62 @@ class TestBencode:
         assert bencode({"b": 1, "a": "é"}) == b"d1:a2:\xc3\xa91:bi1ee"
 
 
+class TestServerEnv:
+    def test_keeps_path_and_jolt_settings_drops_secrets(self, monkeypatch):
+        from src.codeflow.synthetic.jolt_eval import _server_env
+        monkeypatch.setenv("PATH", "/opt/homebrew/bin:/usr/bin")
+        monkeypatch.setenv("JOLT_CHEZ", "/opt/homebrew/bin/chez")
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-secret")
+        env = _server_env("/x/jolt/bin/jolt", "/w/tmp")
+        assert env["PATH"].split(":")[:2] == ["/x/jolt/bin", "/opt/homebrew/bin"]
+        assert env["JOLT_CHEZ"] == "/opt/homebrew/bin/chez"
+        assert env["TMPDIR"] == "/w/tmp"
+        assert "DEEPSEEK_API_KEY" not in env
+
+
+    def test_stack_limit_follows_memory_cap(self, monkeypatch):
+        from src.codeflow.synthetic.jolt_eval import _server_env
+        monkeypatch.delenv("JOLT_STACK_LIMIT", raising=False)
+        assert _server_env("/j/bin/jolt", "/t", max_rss_mb=2048)["JOLT_STACK_LIMIT"] == "512m"
+        assert "JOLT_STACK_LIMIT" not in _server_env("/j/bin/jolt", "/t", max_rss_mb=None)
+
+    def test_explicit_stack_limit_wins(self, monkeypatch):
+        from src.codeflow.synthetic.jolt_eval import _server_env
+        monkeypatch.setenv("JOLT_STACK_LIMIT", "off")
+        assert _server_env("/j/bin/jolt", "/t", max_rss_mb=2048)["JOLT_STACK_LIMIT"] == "off"
+
+
+class TestSandboxProfile:
+    def test_jolt_install_root_is_readable(self, tmp_path):
+        # A source checkout under $HOME runs from its own tree (bin/jolt
+        # loads host/chez/*.ss), so the sandbox must let it read that tree.
+        from src.codeflow.synthetic.jolt_eval import _sandbox_profile
+        root = tmp_path / "jolt"
+        (root / "bin").mkdir(parents=True)
+        (root / "bin" / "jolt").write_text("")
+        home = tmp_path.resolve()
+        profile = _sandbox_profile("/w", str(home), str(root / "bin" / "jolt"))
+        assert f'(subpath "{root.resolve()}")' in profile
+
+    def test_dirs_between_home_and_root_are_listable_not_open(self, tmp_path):
+        from src.codeflow.synthetic.jolt_eval import _sandbox_profile
+        home = tmp_path.resolve()
+        root = home / "src" / "jolt"
+        (root / "bin").mkdir(parents=True)
+        (root / "bin" / "jolt").write_text("")
+        profile = _sandbox_profile("/w", str(home), str(root / "bin" / "jolt"))
+        assert f'(literal "{home / "src"}")' in profile
+        assert f'(subpath "{home / "src"}")' not in profile
+
+    def test_root_containing_home_is_not_opened(self, tmp_path):
+        from src.codeflow.synthetic.jolt_eval import _sandbox_profile
+        home = tmp_path.resolve()
+        (home / "bin").mkdir()
+        (home / "bin" / "jolt").write_text("")
+        profile = _sandbox_profile("/w", str(home), str(home / "bin" / "jolt"))
+        assert f'(subpath "{home}")' not in profile.split("(allow file-read*")[1]
+
+
 @needs_jolt
 class TestEvalForms:
     def test_values_and_output(self):
@@ -52,12 +108,22 @@ class TestEvalForms:
         assert "timed out" in rs[0].error.lower()
         assert rs[1].ok and rs[1].value == "5"
 
-    def test_runaway_recursion_is_killed_by_memory_cap(self):
-        import time
-        t = time.monotonic()
+    def test_runaway_recursion_overflows_the_stack(self):
         rs = eval_forms(["(defn f [x] (inc (f x)))", "(f 1)", "(+ 1 1)"],
                         timeout=30.0, max_rss_mb=600)
-        assert time.monotonic() - t < 20
+        if "out of memory" in rs[1].error:
+            pytest.xfail("jolt without JOLT_STACK_LIMIT support")
+        assert not rs[1].ok
+        assert "StackOverflowError" in rs[1].error
+        assert rs[2].ok and rs[2].value == "2"  # the session survives
+
+    def test_runaway_allocation_is_killed_by_memory_cap(self):
+        import time
+        t = time.monotonic()
+        rs = eval_forms(["(def v (atom []))",
+                         "(doseq [i (range)] (swap! v conj (str i)))", "(+ 1 1)"],
+                        timeout=30.0, max_rss_mb=600)
+        assert time.monotonic() - t < 25
         assert not rs[1].ok
         assert "memory" in rs[1].error
         assert not rs[2].ok  # the server is gone; nothing after it ran
@@ -89,6 +155,11 @@ class TestSandbox:
         monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-secret")
         rs = eval_forms(['(System/getenv "DEEPSEEK_API_KEY")'])
         assert rs[0].value == "nil"
+
+    def test_jolt_settings_reach_the_server(self, monkeypatch):
+        monkeypatch.setenv("JOLT_STACK_LIMIT", "64m")
+        rs = eval_forms(['(System/getenv "JOLT_STACK_LIMIT")'])
+        assert rs[0].value == '"64m"'
 
     def test_home_is_unreadable(self):
         rs = eval_forms(['(slurp (str (System/getenv "HOME") "/.ssh/known_hosts"))'])
