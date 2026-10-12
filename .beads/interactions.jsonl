@@ -56,3 +56,4 @@
 {"id":"int-617dd40f","kind":"field_change","created_at":"2026-10-12T12:23:59.54044Z","actor":"Yogthos","issue_id":"clojure-lora-trainer-0sv.9","extra":{"field":"status","new_value":"closed","old_value":"open","reason":"Closed"}}
 {"id":"int-e93abf4b","kind":"field_change","created_at":"2026-10-12T15:28:13.343377Z","actor":"Yogthos","issue_id":"clojure-lora-trainer-0sv.16","extra":{"field":"status","new_value":"closed","old_value":"in_progress","reason":"Closed"}}
 {"id":"int-633b839e","kind":"field_change","created_at":"2026-10-12T15:38:10.935236Z","actor":"Yogthos","issue_id":"clojure-lora-trainer-0sv.15","extra":{"field":"status","new_value":"closed","old_value":"in_progress","reason":"Closed"}}
+{"id":"int-857e2fc5","kind":"field_change","created_at":"2026-10-12T15:49:50.449889Z","actor":"Yogthos","issue_id":"clojure-lora-trainer-0sv.13","extra":{"field":"status","new_value":"closed","old_value":"in_progress","reason":"Closed"}}
