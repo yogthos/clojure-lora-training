@@ -32,8 +32,8 @@ from .nrepl_client import NReplClient
 
 # jolt-lang/nrepl: sessions + interruptible eval over jolt's built-in server.
 NREPL_GIT_URL = "https://github.com/jolt-lang/nrepl"
-NREPL_GIT_TAG = "v0.2.1"
-NREPL_GIT_SHA = "aad8baef0dfe56d288792017841f37321d8160b1"
+NREPL_GIT_TAG = "v0.3.0"
+NREPL_GIT_SHA = "d779043d18235a83025c2800b60c9080c1bc9adc"
 
 _DEPS_EDN = f"""{{:deps {{jolt-lang/nrepl {{:git/url "{NREPL_GIT_URL}"
                          :git/tag "{NREPL_GIT_TAG}" :git/sha "{NREPL_GIT_SHA}"}}}}
