@@ -63,3 +63,31 @@ def test_cli_writes_chains(tmp_path, monkeypatch):
     _script().main()
     recs = [json.loads(l) for l in out.read_text().splitlines()]
     assert len(recs) == 1 and len(recs[0]["conversations"]) == 8
+
+
+def test_cli_writes_each_repo_as_it_is_mined(tmp_path, monkeypatch):
+    # A shard runs for hours: holding every record until the end costs memory
+    # (each git call forks the whole process) and loses everything on a crash.
+    import json
+    import sys
+
+    from src.codeflow.git_mining.miner import MinedExample
+
+    mod = _script()
+    out = tmp_path / "out.jsonl"
+    seen_on_disk = []
+
+    def fake_mine(path, repo_name="", **kw):
+        seen_on_disk.append(out.read_text().count("\n") if out.exists() else 0)
+        return [MinedExample(repo_name=repo_name, instruction=f"change {repo_name}",
+                             before={}, after={}, diff="", changed_files=[])]
+
+    for name in ("r1", "r2"):
+        (tmp_path / name).mkdir()
+    monkeypatch.setattr(mod, "mine_repository", fake_mine)
+    (tmp_path / "repos.txt").write_text(f"{tmp_path / 'r1'}\n{tmp_path / 'r2'}\n")
+    monkeypatch.setattr(sys, "argv", ["mine", "--repo-file", str(tmp_path / "repos.txt"),
+                                      "-o", str(out)])
+    mod.main()
+    assert seen_on_disk == [0, 1]
+    assert [json.loads(l)["repo"] for l in out.read_text().splitlines()] == ["r1", "r2"]

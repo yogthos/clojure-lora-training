@@ -30,7 +30,6 @@ Usage:
 """
 
 import argparse
-import json
 import sys
 import subprocess
 import tempfile
@@ -39,7 +38,7 @@ from typing import List, Optional
 from collections import Counter
 
 
-from src.codeflow.git_mining.miner import CHAIN_CHARS, MinedChain, MinedExample, mine_repository
+from src.codeflow.git_mining.miner import CHAIN_CHARS, MinedChain, mine_repository
 from src.codeflow.git_mining.pattern_classifier import DiffClassification, classify_diff
 
 # --pattern choice -> DiffClassification field.
@@ -187,20 +186,7 @@ def clone_if_needed(repo: str, clone_dir: str, depth: int = 0) -> Optional[str]:
         return None
 
 
-def main():
-    args = parse_args()
-    repos = resolve_repos(args)
-
-    if args.lifecycle_window.strip().lower() == "none":
-        lifecycle_window = None
-    else:
-        lo, hi = (float(x) for x in args.lifecycle_window.split(","))
-        lifecycle_window = (lo, hi)
-
-    clone_dir = args.clone_dir or tempfile.mkdtemp(prefix="clj-mine-")
-    all_examples: List["MinedExample | MinedChain"] = []
-    stats = Counter()
-
+def _mine_all(args, repos, clone_dir, lifecycle_window, stats, out):
     for repo in repos:
         local_path = clone_if_needed(repo, clone_dir, depth=args.clone_depth)
         if not local_path:
@@ -236,7 +222,9 @@ def main():
             stats["filtered_out"] += len(examples) - len(filtered)
             examples = filtered
 
-        all_examples.extend(examples)
+        for ex in examples:
+            out.write(ex.to_jsonl() + "\n")
+        out.flush()
         chains = [ex for ex in examples if isinstance(ex, MinedChain)]
         stats[f"repo_{repo_name}"] = len(examples)
         stats["total_examples"] += len(examples)
@@ -245,18 +233,33 @@ def main():
 
         print(f"  {repo_name}: {len(examples)} examples ({len(chains)} chains)", file=sys.stderr)
 
-    # Write output
+
+def main():
+    args = parse_args()
+    repos = resolve_repos(args)
+
+    if args.lifecycle_window.strip().lower() == "none":
+        lifecycle_window = None
+    else:
+        lo, hi = (float(x) for x in args.lifecycle_window.split(","))
+        lifecycle_window = (lo, hi)
+
+    clone_dir = args.clone_dir or tempfile.mkdtemp(prefix="clj-mine-")
+    stats = Counter()
+
+    # Records go out as each repo finishes: a shard runs for hours, and
+    # holding them all costs memory (every git call forks the process) and
+    # loses everything on a crash.
     out = open(args.output, "w") if args.output != "-" else sys.stdout
     try:
-        for ex in all_examples:
-            out.write(ex.to_jsonl() + "\n")
+        _mine_all(args, repos, clone_dir, lifecycle_window, stats, out)
     finally:
         if out is not sys.stdout:
             out.close()
 
     # Print stats
     if args.stats:
-        print(f"\n--- Mining Statistics ---", file=sys.stderr)
+        print("\n--- Mining Statistics ---", file=sys.stderr)
         print(f"Repos processed: {len(repos)}", file=sys.stderr)
         print(f"Total examples: {stats['total_examples']} "
               f"({stats['chains']} chains, {stats['chain_turns']} turns)", file=sys.stderr)
