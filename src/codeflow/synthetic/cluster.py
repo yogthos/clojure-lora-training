@@ -8,7 +8,6 @@ iteratively adds the point farthest from its nearest coreset neighbor,
 ensuring maximum diversity in the selected subset.
 """
 
-import hashlib
 import json
 import random
 from dataclasses import dataclass, field
@@ -25,31 +24,6 @@ class ClusterConfig:
     random_seed: int = 42
     metric: str = "cosine"        # "cosine" or "euclidean"
     min_samples_per_cluster: int = 5
-
-
-def _embed_text(text: str, dim: int = 768) -> np.ndarray:
-    """Generate a deterministic embedding for text using a hash-based approach.
-
-    This is a lightweight fallback for when no external embedding model
-    is available. Uses SHA-256 to generate a pseudo-embedding that
-    is deterministic but not semantically meaningful.
-
-    For production use, replace with a proper embedding model.
-    """
-    # Deterministic hash-based embedding
-    h = hashlib.sha256(text.encode("utf-8")).digest()
-    # Expand to target dimension
-    vec = np.zeros(dim, dtype=np.float32)
-    for i in range(min(dim, len(h) * 8)):
-        byte_idx = i // 8
-        bit_idx = i % 8
-        if byte_idx < len(h) and (h[byte_idx] & (1 << bit_idx)):
-            vec[i] = 1.0
-    # Normalize
-    norm = np.linalg.norm(vec)
-    if norm > 0:
-        vec /= norm
-    return vec
 
 
 def _cosine_distance(a: np.ndarray, b: np.ndarray) -> float:
@@ -140,46 +114,30 @@ def kcenter_greedy(
 
 def embed_examples(
     examples: List[dict],
+    embed_fn,
     embedding_dim: int = 768,
-    embed_fn=None,
 ) -> np.ndarray:
-    """Embed training examples into vector space.
+    """Embed training examples (instruction + input) with ``embed_fn``.
 
-    Uses instruction + file content for embedding. Falls back to
-    hash-based embedding if no embed_fn is provided.
-
-    Args:
-        examples: List of training example dicts.
-        embedding_dim: Target embedding dimension.
-        embed_fn: Optional function (text) → numpy array.
+    There is no default: k-center over anything but semantic embeddings
+    picks points at random while claiming diversity.
 
     Returns:
         (n_examples, embedding_dim) array.
     """
-    if embed_fn is not None:
-        embeddings = []
-        for ex in examples:
-            # Concatenate instruction and input for embedding
-            text = ex.get("instruction", "") + " " + ex.get("input", "")
-            emb = embed_fn(text)
-            embeddings.append(emb)
-        if embeddings:
-            return np.array(embeddings)
-
-    # Fallback: hash-based embeddings
-    embeddings = []
-    for ex in examples:
-        text = ex.get("instruction", "") + " " + ex.get("input", "")
-        embeddings.append(_embed_text(text, dim=embedding_dim))
-
-    return np.array(embeddings) if embeddings else np.zeros((0, embedding_dim))
+    if embed_fn is None:
+        raise ValueError("embed_fn is required (a text -> vector embedding model)")
+    if not examples:
+        return np.zeros((0, embedding_dim))
+    return np.array([embed_fn(ex.get("instruction", "") + " " + ex.get("input", ""))
+                     for ex in examples])
 
 
 def select_coreset(
     examples: List[dict],
+    embed_fn,
     target_size: int = 1000,
     embedding_dim: int = 768,
-    embed_fn=None,
     metric: str = "cosine",
     seed: int = 42,
 ) -> List[dict]:
@@ -189,7 +147,7 @@ def select_coreset(
         examples: Training examples to select from.
         target_size: Desired coreset size.
         embedding_dim: Dimension for embeddings.
-        embed_fn: Optional embedding function.
+        embed_fn: Text -> vector embedding function (required).
         metric: Distance metric.
         seed: Random seed.
 
@@ -199,7 +157,7 @@ def select_coreset(
     if len(examples) <= target_size:
         return examples
 
-    embeddings = embed_examples(examples, embedding_dim, embed_fn)
+    embeddings = embed_examples(examples, embed_fn, embedding_dim)
     indices = kcenter_greedy(embeddings, target_size, metric=metric, seed=seed)
 
     return [examples[i] for i in indices]
@@ -214,16 +172,20 @@ def select_by_feature_diversity(
     """Select a diverse subset by feature coverage.
 
     Ensures selected examples cover a wide range of Clojure features
-    and development patterns.
+    and development patterns. Coverage picks one example per feature; the
+    remaining slots are filled at random from the rest, so the result always
+    has min(target_size, len(examples)) items — examples without features
+    (e.g. mined data) are still eligible rather than silently dropped.
 
     Args:
-        examples: Training examples with "features" field.
-        feature_extractor: Function (example) → feature list.
+        examples: Training examples, optionally with a "features" field.
+        extract_fn: Function (example) → feature list. Defaults to the
+            example's "features" (or "feature") field.
         target_size: Target coreset size.
         seed: Random seed.
 
     Returns:
-        Selected examples.
+        Selected examples, in their original order.
     """
     if len(examples) <= target_size:
         return examples
@@ -241,29 +203,30 @@ def select_by_feature_diversity(
     # Build feature → example index
     feature_to_examples: Dict[str, List[int]] = {}
     for i, ex in enumerate(examples):
-        feats = extract_fn(ex)
-        for f in feats:
-            fkey = f.lower().strip()
-            if fkey not in feature_to_examples:
-                feature_to_examples[fkey] = []
-            feature_to_examples[fkey].append(i)
+        for f in extract_fn(ex) or []:
+            if isinstance(f, dict):
+                f = f.get("name", "")
+            if not isinstance(f, str) or not f.strip():
+                continue
+            feature_to_examples.setdefault(f.lower().strip(), []).append(i)
 
-    # Greedy coverage selection
+    # Greedy coverage selection: one example per feature, features visited in
+    # random order (sorted first so the seed alone decides the order).
     selected: Set[int] = set()
-    remaining_features = set(feature_to_examples.keys())
-
-    while len(selected) < target_size and remaining_features:
-        # Pick the least-covered feature
-        feat = rng.choice(list(remaining_features))
+    features = sorted(feature_to_examples)
+    rng.shuffle(features)
+    for feat in features:
+        if len(selected) >= target_size:
+            break
         candidates = [
             i for i in feature_to_examples[feat] if i not in selected
         ]
         if candidates:
             selected.add(rng.choice(candidates))
-        remaining_features.discard(feat)
 
-        # Break if no new selections being made
-        if len(selected) >= target_size:
-            break
+    # Fill the remaining slots from everything not yet selected.
+    if len(selected) < target_size:
+        rest = [i for i in range(len(examples)) if i not in selected]
+        selected.update(rng.sample(rest, target_size - len(selected)))
 
-    return [examples[i] for i in selected]
+    return [examples[i] for i in sorted(selected)]

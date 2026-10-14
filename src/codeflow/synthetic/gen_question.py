@@ -14,8 +14,9 @@ import random
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
-from ...llm.provider import LLMProvider
+from ...llm.provider import LLMAuthError, LLMError, LLMProvider
 from .construct_tree import FeatureTree, FeatureTreeNode
+from .llm_json import parse_json_list
 
 
 # System prompt for question generation — Clojure-specific
@@ -54,59 +55,72 @@ class GeneratedTask:
         }
 
 
-# Task type templates for Clojure scenarios
+# Most tasks requested from one call. A reply cut off at max_tokens is broken
+# JSON, and tasks carry inline code, so large counts are split into batches.
+_MAX_TASKS_PER_CALL = 4
+
+
+# Task type templates for Clojure scenarios. These seed the LLM, which writes
+# the actual instruction. The answer starts from an empty REPL with no project,
+# so seeds never point at files: existing code is shown inline in the task, and
+# new behavior is described with literal example data.
 _TASK_TEMPLATES = {
     "bug-fix": [
-        "A user reports that {feature_desc}. Current code at {file} doesn't handle {edge_case}. "
-        "Investigate the issue using the REPL, find the root cause, and fix it.",
+        "A function built around {feature_name} returns wrong results for {edge_case}. "
+        "Show the buggy function inline and a call that misbehaves, and ask for it to be "
+        "reproduced in the REPL, diagnosed, and fixed.",
 
-        "The function {feature_name} in {file} has unexpected behavior when called with {input_type}. "
-        "Use the REPL to reproduce, diagnose, and fix the problem.",
-
-        "After a dependency update, {feature_name} broke. The error is {error_desc}. "
-        "Explore the updated API in the REPL and adapt the code.",
+        "Code using {feature_name} throws {error_desc} when given {input_type}. "
+        "Show the offending function inline, state the expected behavior, and ask for a "
+        "REPL-driven fix.",
     ],
     "refactor": [
-        "Refactor {feature_name} in {file} to use {pattern}. "
-        "Use the REPL to test the refactored version interactively before applying changes.",
+        "Show a working but clumsy function (inline) for {feature_desc}. Ask for it to be "
+        "refactored to use {feature_name} idiomatically, checking equivalence on sample "
+        "data in the REPL.",
 
-        "The code in {file} duplicates {feature_name} logic across several functions. "
-        "Extract shared behavior using {pattern}. Verify equivalence via REPL evaluation.",
-
-        "Update {file} to follow Clojure idioms for {feature_desc}. "
-        "Explore alternatives in the REPL before settling on a final approach.",
+        "Show two or three small functions (inline) that duplicate logic around "
+        "{feature_name}. Ask for the shared behavior to be extracted, verifying in the "
+        "REPL that results are unchanged.",
     ],
     "add-feature": [
-        "Add {feature_desc} to the codebase. Start by exploring the existing code in the REPL "
-        "to understand the current architecture, then implement the new feature interactively.",
+        "Describe a small, concrete piece of functionality for {feature_desc}, with "
+        "example inputs and expected outputs, to be built with {feature_name}. Ask for "
+        "it to be prototyped and tested in the REPL.",
 
-        "We need {feature_desc} in {file}. This should use {feature_name}. "
-        "Prototype the implementation in the REPL, test with sample inputs, then apply.",
-
-        "Extend the system with {feature_desc}. The feature should leverage {feature_name}. "
-        "Use the REPL to incrementally build and test the implementation.",
+        "Give the data shape as a literal example and the behavior needed for "
+        "{feature_desc}. Ask for an implementation using {feature_name}, built up "
+        "incrementally in the REPL.",
     ],
     "optimize": [
-        "Profile {feature_name} in {file} using the REPL. Identify performance bottlenecks "
-        "and optimize using {pattern}. Verify correctness after optimization.",
+        "Show a correct but slow function (inline) related to {feature_desc}. Ask for it "
+        "to be made faster for large inputs using {feature_name}, timing both versions in "
+        "the REPL and checking the results match.",
 
-        "The {feature_desc} is too slow for large inputs. Use the REPL to measure, "
-        "then apply {pattern} to improve performance while maintaining correctness.",
-
-        "Optimize memory usage in {feature_name} by switching to {pattern}. "
-        "Use the REPL to compare before/after behavior and memory profiles.",
+        "Show a function (inline) that does redundant work with {feature_name}. Ask for "
+        "the waste to be removed while keeping results identical, comparing old and new "
+        "in the REPL.",
     ],
     "repl-explore": [
-        "Explore how {feature_name} works in the REPL. Understand its behavior with "
-        "different inputs, edge cases, and interactions. Document findings and suggest improvements.",
+        "Ask for an interactive exploration of how {feature_name} behaves with different "
+        "inputs, including {edge_case}, ending with a small helper that captures the findings.",
 
-        "Investigate the {feature_desc} by evaluating expressions in the REPL. "
-        "Identify any design issues and propose refactoring using {feature_name}.",
-
-        "Use the REPL to understand the data flow through {feature_desc}. "
-        "Map out the transformation pipeline and identify opportunities for using {pattern}.",
+        "Show a short snippet (inline) using {feature_name} and ask for its data flow to "
+        "be traced in the REPL step by step, then for a clearer version to be written.",
     ],
 }
+
+
+def _pick_task_types(count: int) -> List[str]:
+    """Pick ``count`` task types, covering every type before repeating any.
+
+    Taking types in dict order meant small counts only ever produced the first
+    few (bug-fix, refactor), never optimize or repl-explore.
+    """
+    types: List[str] = []
+    while len(types) < count:
+        types.extend(random.sample(list(_TASK_TEMPLATES), len(_TASK_TEMPLATES)))
+    return types[:count]
 
 
 def _build_task_prompt(
@@ -122,24 +136,14 @@ def _build_task_prompt(
         f.get("name", node.label) for f in features[:5]
     ] if features else [node.label]
 
-    # Pick diverse templates
-    templates = []
-    for task_type, type_templates in _TASK_TEMPLATES.items():
-        if len(templates) >= count:
-            break
-        templates.append((task_type, random.choice(type_templates)))
-
     seed_tasks = []
-    for task_type, tmpl in templates:
-        feat_name = random.choice(feature_names)
-        seed = tmpl.format(
+    for task_type in _pick_task_types(count):
+        seed = random.choice(_TASK_TEMPLATES[task_type]).format(
             feature_desc=node.description or node.label,
-            feature_name=feat_name,
-            file=random.choice(["src/core.clj", f"src/{node.label.lower().replace(' ', '_')}.clj"]),
-            pattern="Clojure idioms appropriate for this context",
+            feature_name=random.choice(feature_names),
             edge_case=random.choice(["nil inputs", "empty collections", "large datasets", "concurrent access", "malformed data"]),
-            input_type=random.choice(["nil", "empty map", "large vector", "lazy seq", "nested data"]),
-            error_desc=random.choice(["NullPointerException", "ClassCastException", "stack overflow", "arity mismatch", "spec validation failure"]),
+            input_type=random.choice(["nil", "an empty map", "a large vector", "a lazy seq", "nested data"]),
+            error_desc=random.choice(["a NullPointerException", "a ClassCastException", "a stack overflow", "an arity exception", "an IllegalArgumentException"]),
         )
         seed_tasks.append({"type": task_type, "seed": seed})
 
@@ -149,9 +153,9 @@ def _build_task_prompt(
         f"Available features: {json.dumps(feature_names)}\n\n"
         f"Seed ideas (expand and make realistic):\n"
         f"{json.dumps(seed_tasks, indent=2)}\n\n"
-        f"Generate {count} realistic Clojure coding tasks based on these seeds. "
-        f"Make each task specific, concrete, and suitable for REPL-driven development. "
-        f"Output as JSON array."
+        f"Generate {count} realistic Clojure coding tasks based on these seeds, one per seed. "
+        f"Make each task specific, concrete, self-contained, and suitable for REPL-driven "
+        f"development. Output a JSON object with the tasks under a \"tasks\" key."
     )
     return prompt
 
@@ -163,6 +167,10 @@ def generate_tasks_from_node(
 ) -> List[GeneratedTask]:
     """Generate coding tasks for a single taxonomy node.
 
+    Requests at most _MAX_TASKS_PER_CALL tasks per call. A failed or
+    unparseable batch is dropped — no canned tasks are substituted, since a
+    generic task isn't about this node and pollutes the training data.
+
     Args:
         node: The feature tree node to generate tasks for.
         llm: LLM provider.
@@ -171,60 +179,31 @@ def generate_tasks_from_node(
     Returns:
         List of GeneratedTask objects.
     """
-    features = node.features
-    prompt = _build_task_prompt(features, node, count)
-
-    try:
-        result = llm.call(
-            system_prompt=_QUESTION_SYSTEM,
-            user_prompt=prompt,
-            temperature=0.8,
-            max_tokens=4096,
-            require_json=True,
-        )
-        items = json.loads(result) if isinstance(result, str) else result
-        if isinstance(items, dict):
-            items = [items]
-    except Exception:
-        return _generate_fallback_tasks(node, count)
-
-    tasks = []
-    for item in items:
-        if not isinstance(item, dict):
+    tasks: List[GeneratedTask] = []
+    for start in range(0, count, _MAX_TASKS_PER_CALL):
+        n = min(_MAX_TASKS_PER_CALL, count - start)
+        prompt = _build_task_prompt(node.features, node, n)
+        try:
+            result = llm.call(
+                system_prompt=_QUESTION_SYSTEM,
+                user_prompt=prompt,
+                temperature=0.8,
+                max_tokens=4096,
+                require_json=True,
+                reject_truncated=True,
+            )
+            items = parse_json_list(result, "tasks")
+        except LLMAuthError:
+            raise
+        except (LLMError, ValueError):
             continue
-        task = GeneratedTask.from_dict(item)
-        if task.instruction:
-            tasks.append(task)
+
+        batch = [GeneratedTask.from_dict(item) for item in items]
+        tasks.extend([
+            t for t in batch if isinstance(t.instruction, str) and t.instruction.strip()
+        ][:n])
 
     return tasks[:count]
-
-
-def _generate_fallback_tasks(
-    node: FeatureTreeNode,
-    count: int,
-) -> List[GeneratedTask]:
-    """Generate basic fallback tasks without LLM."""
-    tasks = []
-    task_types = list(_TASK_TEMPLATES.keys())
-
-    for i in range(min(count, len(task_types))):
-        ttype = task_types[i % len(task_types)]
-        feat_desc = node.description or node.label
-
-        tasks.append(GeneratedTask(
-            task_type=ttype,
-            instruction=(
-                f"In {node.label}, implement improvements using Clojure idioms. "
-                f"Use the REPL to explore, test, and iterate before applying changes. "
-                f"The feature area is: {feat_desc}."
-            ),
-            feature_used=node.label,
-            difficulty="intermediate",
-            context_files=[f"src/{node.label.lower().replace(' ', '_')}.clj"],
-            expected_changes=f"Changes to {node.label} functionality using Clojure patterns",
-        ))
-
-    return tasks
 
 
 def generate_tasks_from_tree(

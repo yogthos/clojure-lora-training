@@ -1,5 +1,6 @@
 """Abstract base class for LLM providers."""
 
+import threading
 import json
 import time
 from abc import ABC, abstractmethod
@@ -10,6 +11,9 @@ from ..config import LLMProviderConfig, LLMConfig
 from ..utils.logging import get_logger, log_llm_call
 
 logger = get_logger(__name__)
+
+
+_usage_lock = threading.Lock()
 
 
 class LLMError(Exception):
@@ -29,6 +33,29 @@ class LLMTimeoutError(LLMError):
 
 class LLMResponseError(LLMError):
     """Raised when response is malformed or invalid."""
+    pass
+
+
+class LLMTransientError(LLMError):
+    """A failure worth retrying: 5xx, dropped connection, empty reply."""
+    pass
+
+
+class LLMAuthError(LLMError):
+    """Bad key, no credit, or forbidden (401/402/403). Never retried, and
+    callers that skip failed items re-raise it: every later call would fail
+    the same way, so the run must stop rather than finish with nothing kept."""
+    pass
+
+
+class LLMUnavailableError(LLMAuthError):
+    """The provider can't be reached at all (local server not running). Fatal
+    for the same reason as an auth error."""
+    pass
+
+
+class LLMTruncatedError(LLMResponseError):
+    """Raised when a response was cut off at max_tokens and the caller can't use it."""
     pass
 
 
@@ -54,6 +81,7 @@ class LLMProvider(ABC):
             "max_delay": 60.0
         }
         self._total_input_tokens = 0
+        self._total_cached_input_tokens = 0
         self._total_output_tokens = 0
         self._total_calls = 0
 
@@ -109,7 +137,8 @@ class LLMProvider(ABC):
         user_prompt: str,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
-        require_json: bool = False
+        require_json: bool = False,
+        reject_truncated: bool = False,
     ) -> str:
         """Make a single LLM call with system and user prompts.
 
@@ -119,6 +148,9 @@ class LLMProvider(ABC):
             temperature: Sampling temperature.
             max_tokens: Maximum tokens in response.
             require_json: If True, request JSON response format.
+            reject_truncated: If True, raise LLMTruncatedError when the provider
+                reports the reply was cut off at max_tokens. Not retried — the
+                same request would truncate again.
 
         Returns:
             Generated text content.
@@ -128,6 +160,10 @@ class LLMProvider(ABC):
             Message(role=MessageRole.USER, content=user_prompt)
         ]
         response = self._call_with_retry(messages, temperature, max_tokens, require_json)
+        if reject_truncated and response.finish_reason == "length":
+            raise LLMTruncatedError(
+                f"{self.provider_name} reply truncated at max_tokens={max_tokens}"
+            )
         return response.content
 
     def call_json(
@@ -229,9 +265,11 @@ class LLMProvider(ABC):
                 response = self._call_api(messages, temperature, max_tokens, require_json, logit_bias=logit_bias)
 
                 # Track usage
-                self._total_input_tokens += response.input_tokens
-                self._total_output_tokens += response.output_tokens
-                self._total_calls += 1
+                with _usage_lock:  # providers are shared across worker threads
+                    self._total_input_tokens += response.input_tokens
+                    self._total_cached_input_tokens += response.cached_input_tokens
+                    self._total_output_tokens += response.output_tokens
+                    self._total_calls += 1
 
                 duration_ms = int((time.time() - start_time) * 1000)
                 log_llm_call(
@@ -255,11 +293,11 @@ class LLMProvider(ABC):
                 )
                 time.sleep(delay)
 
-            except LLMTimeoutError as e:
+            except (LLMTimeoutError, LLMTransientError) as e:
                 last_error = e
                 delay = min(base_delay * (2 ** attempt), max_delay)
                 logger.warning(
-                    f"Request timeout, retrying in {delay}s (attempt {attempt + 1}/{max_retries})",
+                    f"{e}; retrying in {delay}s (attempt {attempt + 1}/{max_retries})",
                     extra_data={"provider": self.provider_name, "delay": delay}
                 )
                 time.sleep(delay)
@@ -297,6 +335,7 @@ class LLMProvider(ABC):
         """Get cumulative usage statistics."""
         return {
             "total_input_tokens": self._total_input_tokens,
+            "total_cached_input_tokens": self._total_cached_input_tokens,
             "total_output_tokens": self._total_output_tokens,
             "total_tokens": self._total_input_tokens + self._total_output_tokens,
             "total_calls": self._total_calls
@@ -305,8 +344,17 @@ class LLMProvider(ABC):
     def reset_usage_stats(self) -> None:
         """Reset usage statistics."""
         self._total_input_tokens = 0
+        self._total_cached_input_tokens = 0
         self._total_output_tokens = 0
         self._total_calls = 0
+
+
+def usage_line(stats: Dict[str, int]) -> str:
+    """One-line usage summary for the end of a pipeline run."""
+    return (f"LLM usage: {stats['total_calls']:,} calls, "
+            f"{stats['total_input_tokens']:,} input tokens "
+            f"({stats.get('total_cached_input_tokens', 0):,} cached), "
+            f"{stats['total_output_tokens']:,} output tokens")
 
 
 # Provider registry for factory function

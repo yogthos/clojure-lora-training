@@ -1,21 +1,39 @@
 {
-  "_comment": "Merge these entries into LLaMA-Factory's data/dataset_info.json. Our records are alpaca-style with a system column: {system, instruction, input, output}. Point file_name at the split files produced by scripts/split_codeflow_dataset.py.",
+  "_comment": "Merge these entries into LLaMA-Factory's data/dataset_info.json. Records are sharegpt with a tools column: workflow traces alternate function_call (an eval tool call) and observation (the nREPL result, no loss) turns; transitions are one human and one gpt turn. Point file_name at the split files written by clj-lora-split.",
   "codeflow_train": {
     "file_name": "codeflow_train.jsonl",
+    "formatting": "sharegpt",
     "columns": {
-      "prompt": "instruction",
-      "query": "input",
-      "response": "output",
-      "system": "system"
+      "messages": "conversations",
+      "system": "system",
+      "tools": "tools"
+    },
+    "tags": {
+      "role_tag": "from",
+      "content_tag": "value",
+      "user_tag": "human",
+      "assistant_tag": "gpt",
+      "observation_tag": "observation",
+      "function_tag": "function_call",
+      "system_tag": "system"
     }
   },
   "codeflow_val": {
     "file_name": "codeflow_val.jsonl",
+    "formatting": "sharegpt",
     "columns": {
-      "prompt": "instruction",
-      "query": "input",
-      "response": "output",
-      "system": "system"
+      "messages": "conversations",
+      "system": "system",
+      "tools": "tools"
+    },
+    "tags": {
+      "role_tag": "from",
+      "content_tag": "value",
+      "user_tag": "human",
+      "assistant_tag": "gpt",
+      "observation_tag": "observation",
+      "function_tag": "function_call",
+      "system_tag": "system"
     }
   }
 }

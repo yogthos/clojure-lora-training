@@ -213,3 +213,73 @@ class TestCallWithHistory:
         # Check that all messages were passed (system + history)
         assert len(provider.last_messages) == 4
         assert provider.last_messages[0].role == MessageRole.SYSTEM
+
+
+class TestOllamaUnreachable:
+    def test_fails_fast_when_server_is_down(self, monkeypatch):
+        # Every call would fail the same way; a run must stop, not drain its
+        # whole input and report zero kept.
+        import requests
+        from src.llm.ollama import OllamaProvider
+        from src.llm.provider import LLMProviderConfig, LLMUnavailableError
+
+        def refuse(*a, **k):
+            raise requests.exceptions.ConnectionError("refused")
+        monkeypatch.setattr(requests, "get", refuse)
+        with pytest.raises(LLMUnavailableError, match="Ollama"):
+            OllamaProvider(LLMProviderConfig(api_key="", base_url="http://localhost:1",
+                                             model="m", max_tokens=8, temperature=0.0))
+
+
+class TestCachedInputTokens:
+    """DeepSeek bills cache-hit input at a fraction of a miss; budgets need both."""
+
+    def _deepseek(self):
+        from src.llm.deepseek import DeepSeekProvider
+        from src.llm.provider import LLMProviderConfig
+        return DeepSeekProvider(LLMProviderConfig(api_key="k", base_url="http://x", model="m",
+                                                  max_tokens=8, temperature=0.0))
+
+    def test_deepseek_reports_cache_hits(self):
+        resp = MagicMock(status_code=200)
+        resp.json.return_value = {
+            "choices": [{"message": {"content": "hi"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 1000, "completion_tokens": 50,
+                      "prompt_cache_hit_tokens": 800, "prompt_cache_miss_tokens": 200}}
+        p = self._deepseek()
+        with patch("src.llm.deepseek.requests.post", return_value=resp):
+            p.call("S", "U")
+            p.call("S", "U")
+        stats = p.get_usage_stats()
+        assert stats["total_input_tokens"] == 2000
+        assert stats["total_cached_input_tokens"] == 1600
+        assert stats["total_output_tokens"] == 100
+
+    def test_usage_line(self):
+        from src.llm.provider import usage_line
+        assert usage_line({"total_calls": 3, "total_input_tokens": 12000,
+                           "total_cached_input_tokens": 9000, "total_output_tokens": 1500}) == \
+            "LLM usage: 3 calls, 12,000 input tokens (9,000 cached), 1,500 output tokens"
+
+
+def test_deepseek_default_model_is_pinned(monkeypatch):
+    # deepseek-chat became an alias the API resolves to whatever is current;
+    # name the model the data was generated with.
+    from src.llm.env import provider_from_env
+    monkeypatch.setenv("LLM_PROVIDER", "deepseek")
+    monkeypatch.delenv("DEEPSEEK_MODEL", raising=False)
+    assert provider_from_env().config.model == "deepseek-flash"
+
+
+def test_deepseek_thinking_is_off_by_default(monkeypatch):
+    # deepseek-flash thinks unless told not to: the hidden reasoning bills as
+    # output and can use up max_tokens, leaving the reply empty. Our prompts
+    # ask for reasoning in the JSON instead.
+    from src.llm.env import provider_from_env
+    monkeypatch.setenv("LLM_PROVIDER", "deepseek")
+    resp = MagicMock(status_code=200)
+    resp.json.return_value = {"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+                              "usage": {}}
+    with patch("src.llm.deepseek.requests.post", return_value=resp) as post:
+        provider_from_env().call("S", "U")
+    assert post.call_args.kwargs["json"]["thinking"] == {"type": "disabled"}

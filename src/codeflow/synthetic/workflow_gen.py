@@ -2,166 +2,73 @@
 
 Teaches the full agent loop: a vague user request -> work out the goal -> lay
 out files -> sketch an ordered plan -> build the functions one at a time in the
-REPL, showing real failures and recovery -> a final diff. Grounded in RPG
+REPL, meeting real failures and recovering -> a final diff. Grounded in RPG
 (plan-first, dependency-ordered build) and PlanSearch (the NL sketch up front
 dominates success).
+
+Each trace is generated live (see live_trace): every eval runs in a real Jolt
+nREPL session before the next step is written.
 """
 
 import json
 from dataclasses import dataclass
 from typing import Callable, List, Optional
 
-from ...llm.provider import LLMProvider
+from ...llm.provider import LLMAuthError, LLMProvider
 from ...shared import _WORKFLOW_SYSTEM_PROMPT
+from ...utils.logging import get_logger
+from .jolt_eval import JoltSession
+from .live_trace import LiveTrace, _dropped, accept_trace, run_live_trace
 from .prompt_mining import MinedPrompt
-from .prompts import PLAN_SYSTEM as _PLAN_SYSTEM, WORKFLOW_SYSTEM as _WORKFLOW_SYSTEM
+
+logger = get_logger(__name__)
 
 
 @dataclass
 class WorkflowResult:
     """A generated workflow trace ready for training."""
-    user_prompt: str
-    project_context: str
-    plan: dict
-    solution: str
-    verified: bool = False
-    pass_rate: float = 1.0
+    trace: LiveTrace
+    pass_rate: float
 
     def to_training_example(self) -> dict:
-        """LLaMA-Factory record. Planning lives in the output, not the input."""
-        ctx = self.project_context.strip()
-        return {
-            "system": _WORKFLOW_SYSTEM_PROMPT,
-            "instruction": self.user_prompt,
-            "input": f"Project: {ctx}" if ctx else "",
-            "output": self.solution,
-        }
+        return {"system": _WORKFLOW_SYSTEM_PROMPT, **self.trace.to_record()}
 
     def to_jsonl(self) -> str:
         return json.dumps(self.to_training_example(), ensure_ascii=False)
 
 
-def _fallback_plan(prompt: MinedPrompt) -> dict:
-    """A minimal plan when the planning call fails to parse."""
-    return {
-        "goal": prompt.user_prompt,
-        "files": [{"path": "src/core.clj", "purpose": "implementation"}],
-        "steps": [
-            {"name": "solve", "purpose": prompt.user_prompt, "depends_on": []},
-        ],
-    }
-
-
-def generate_plan(prompt: MinedPrompt, llm: LLMProvider) -> dict:
-    """Plan pass: produce {goal, files, steps} from the user request."""
-    user = (
-        f"User request: {prompt.user_prompt}\n"
-        f"Project context: {prompt.project_context}\n\n"
-        f"Plan the implementation."
-    )
-    try:
-        raw = llm.call(
-            system_prompt=_PLAN_SYSTEM,
-            user_prompt=user,
-            temperature=0.3,
-            max_tokens=1536,
-            require_json=True,
-        )
-        plan = json.loads(raw) if isinstance(raw, str) else raw
-        if isinstance(plan, list):
-            plan = plan[0] if plan else {}
-    except (ValueError, TypeError, IndexError):
-        return _fallback_plan(prompt)
-
-    if not isinstance(plan, dict) or not plan.get("steps"):
-        return _fallback_plan(prompt)
-    plan.setdefault("goal", prompt.user_prompt)
-    plan.setdefault("files", [{"path": "src/core.clj", "purpose": "implementation"}])
-    return plan
-
-
-def generate_workflow(
-    prompt: MinedPrompt,
-    plan: dict,
-    llm: LLMProvider,
-) -> str:
-    """Workflow pass: produce the full iterative REPL trace from the plan."""
-    user = (
-        f"User request: {prompt.user_prompt}\n"
-        f"Project context: {prompt.project_context}\n\n"
-        f"Plan:\n{json.dumps(plan, indent=2)}\n\n"
-        f"Implement this plan as a complete nREPL-driven development trace, "
-        f"building one function at a time and showing at least one "
-        f"error-and-recovery."
-    )
-    try:
-        result = llm.call(
-            system_prompt=_WORKFLOW_SYSTEM,
-            user_prompt=user,
-            temperature=0.5,
-            max_tokens=8192,
-            require_json=False,
-        )
-        if isinstance(result, dict):
-            return result.get("text", result.get("content", str(result)))
-        return str(result)
-    except Exception:
-        return ""
-
-
 def generate_one(
     prompt: MinedPrompt,
     llm: LLMProvider,
-    verify: bool = False,
-    bb_path: str = "bb",
+    session_factory: Optional[Callable[[], JoltSession]] = None,
     min_pass_rate: float = 0.6,
 ) -> Optional[WorkflowResult]:
     """Produce one workflow trace for a prompt, or None if it is dropped.
 
-    Plan -> workflow -> (optional) execute+ground. With ``verify`` set, the
-    trace is kept only when it reaches a correct end state (see verify_workflow),
-    preserving the intermediate failure-and-recovery steps. This is the unit of
-    work; it is self-contained so it can run concurrently across prompts.
+    Kept only if the trace reaches a working end state, at least
+    ``min_pass_rate`` of its evals ran cleanly, and the files its diff creates
+    load. Self-contained so it can run concurrently across prompts.
     """
-    plan = generate_plan(prompt, llm)
-    solution = generate_workflow(prompt, plan, llm)
-    if not solution.strip():
+    factory = session_factory or JoltSession
+    trace = run_live_trace(prompt.user_prompt, prompt.project_context, llm,
+                           repo=prompt.source_repo, session_factory=factory)
+    pass_rate = accept_trace(trace, factory, min_pass_rate)
+    if pass_rate is None:
         return None
-
-    verified = False
-    pass_rate = 1.0
-    if verify:
-        from .verify import verify_workflow
-
-        graded = verify_workflow(solution, bb_path=bb_path)
-        if not graded.reaches_correct_end_state or graded.pass_rate < min_pass_rate:
-            return None
-        solution = graded.solution
-        verified = True
-        pass_rate = graded.pass_rate
-
-    return WorkflowResult(
-        user_prompt=prompt.user_prompt,
-        project_context=prompt.project_context,
-        plan=plan,
-        solution=solution,
-        verified=verified,
-        pass_rate=pass_rate,
-    )
+    return WorkflowResult(trace=trace, pass_rate=pass_rate)
 
 
 def generate_workflows(
     prompts: List[MinedPrompt],
     llm: LLMProvider,
     max_examples: int = 50,
-    verify: bool = False,
-    bb_path: str = "bb",
+    session_factory: Optional[Callable[[], JoltSession]] = None,
     min_pass_rate: float = 0.6,
 ) -> List[WorkflowResult]:
     """Generate workflow traces for a list of mined prompts (serially)."""
     results: List[WorkflowResult] = []
     for prompt in prompts[:max_examples]:
-        r = generate_one(prompt, llm, verify, bb_path, min_pass_rate)
+        r = generate_one(prompt, llm, session_factory, min_pass_rate)
         if r is not None:
             results.append(r)
     return results
@@ -171,39 +78,50 @@ def generate_workflows_concurrent(
     prompts: List[MinedPrompt],
     llm: LLMProvider,
     max_workers: int = 8,
-    verify: bool = False,
-    bb_path: str = "bb",
+    session_factory: Optional[Callable[[], JoltSession]] = None,
     min_pass_rate: float = 0.6,
     on_result: Optional[Callable[[WorkflowResult], None]] = None,
     on_progress: Optional[Callable[[int, int, int], None]] = None,
+    on_attempt: Optional[Callable[[MinedPrompt, Optional[WorkflowResult]], None]] = None,
 ) -> List[WorkflowResult]:
     """Generate workflow traces concurrently across prompts.
 
-    The work is I/O-bound (LLM API calls plus babashka subprocesses), so a
+    The work is I/O-bound (LLM API calls plus jolt subprocesses), so a
     thread pool gives real speedup. ``on_result`` is invoked from the calling
     thread for each kept trace as it completes — use it to stream results to
     disk incrementally. ``on_progress(done, total, kept)`` fires once per
     completed prompt for progress reporting. A worker that raises is treated as
-    a dropped sample (None), never aborting the run.
+    a dropped sample (None), never aborting the run — except LLMAuthError,
+    which stops it. ``on_attempt(prompt, result_or_None)`` fires once per
+    finished prompt, kept or dropped, after ``on_result`` — use it to record
+    progress for resuming.
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     results: List[WorkflowResult] = []
     total = len(prompts)
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = [
-            pool.submit(generate_one, p, llm, verify, bb_path, min_pass_rate)
+        futures = {
+            pool.submit(generate_one, p, llm, session_factory, min_pass_rate): p
             for p in prompts
-        ]
+        }
         for done, fut in enumerate(as_completed(futures), 1):
             try:
                 r = fut.result()
-            except Exception:
+            except LLMAuthError:
+                for f in futures:
+                    f.cancel()
+                raise
+            except Exception as e:
+                _dropped(f"worker error: {type(e).__name__}")
+                logger.warning("worker error: %r", e)
                 r = None
             if r is not None:
                 results.append(r)
                 if on_result is not None:
                     on_result(r)
+            if on_attempt is not None:
+                on_attempt(futures[fut], r)
             if on_progress is not None:
                 on_progress(done, total, len(results))
     return results

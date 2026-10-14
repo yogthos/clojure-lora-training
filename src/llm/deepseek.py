@@ -12,6 +12,8 @@ from .provider import (
     LLMRateLimitError,
     LLMTimeoutError,
     LLMResponseError,
+    LLMTransientError,
+    LLMAuthError,
     register_provider
 )
 
@@ -97,6 +99,9 @@ class DeepSeekProvider(LLMProvider):
         if require_json:
             payload["response_format"] = {"type": "json_object"}
 
+        if self.config.thinking is not None:
+            payload["thinking"] = {"type": "enabled" if self.config.thinking else "disabled"}
+
         if logit_bias:
             payload["logit_bias"] = logit_bias
 
@@ -121,6 +126,10 @@ class DeepSeekProvider(LLMProvider):
                         error_msg = f"{error_msg} - {error_data['error'].get('message', '')}"
                 except Exception:
                     error_msg = f"{error_msg} - {response.text[:200]}"
+                if response.status_code in (401, 402, 403):
+                    raise LLMAuthError(error_msg)
+                if response.status_code >= 500:
+                    raise LLMTransientError(error_msg)  # e.g. 503 "server busy"
                 raise LLMError(error_msg)
 
             # Parse response
@@ -132,9 +141,10 @@ class DeepSeekProvider(LLMProvider):
             if "choices" not in data or len(data["choices"]) == 0:
                 raise LLMResponseError("No choices in DeepSeek response")
 
-            content = data["choices"][0].get("message", {}).get("content", "")
+            choice = data["choices"][0]
+            content = choice.get("message", {}).get("content", "")
             if not content:
-                raise LLMResponseError("Empty content in DeepSeek response")
+                raise LLMTransientError("Empty content in DeepSeek response")
 
             # Extract usage info
             usage = data.get("usage", {})
@@ -143,13 +153,15 @@ class DeepSeekProvider(LLMProvider):
                 content=content,
                 input_tokens=usage.get("prompt_tokens", 0),
                 output_tokens=usage.get("completion_tokens", 0),
-                model=data.get("model", self.config.model)
+                cached_input_tokens=usage.get("prompt_cache_hit_tokens", 0),
+                model=data.get("model", self.config.model),
+                finish_reason=choice.get("finish_reason") or "",
             )
 
         except requests.exceptions.Timeout:
             raise LLMTimeoutError(f"DeepSeek request timed out after {self.config.timeout}s")
         except requests.exceptions.ConnectionError as e:
-            raise LLMError(f"DeepSeek connection error: {e}")
+            raise LLMTransientError(f"DeepSeek connection error: {e}")
         except requests.exceptions.RequestException as e:
             raise LLMError(f"DeepSeek request error: {e}")
 

@@ -25,7 +25,7 @@ class DiffClassification:
 
 
 _CONCURRENCY_FORMS = {
-    "atom", "swap!", "reset!", "deref", "@/", "@",
+    "atom", "swap!", "reset!", "deref", "@",
     "ref", "dosync", "alter", "commute", "ensure",
     "agent", "send", "send-off", "send-via", "agent-error",
     "future", "promise", "deliver",
@@ -61,8 +61,49 @@ _PROTOCOL_FORMS = {
 }
 
 _MACRO_FORMS = {
-    "defmacro", "`", "~", "~@", "gensym", "macroexpand",
+    "defmacro", "gensym", "macroexpand", "macroexpand-1",
 }
+
+# Namespace aliases whose qualified forms count as the bare form
+# (``a/go`` -> ``go``, ``spec/def`` -> ``s/def``).
+_ASYNC_NS = {"a", "async", "ca", "clojure.core.async", "cljs.core.async"}
+_SPEC_NS = {"s", "spec", "clojure.spec.alpha", "cljs.spec.alpha"}
+
+_STRING_RE = re.compile(r'"(?:\\.|[^"\\])*"')
+_COMMENT_RE = re.compile(r";.*$")
+_TOKEN_RE = re.compile(r"[^\s()\[\]{}\"',;@^`~\\]+")
+_DEREF_RE = re.compile(r"@[^\s@()\[\]{}]")
+_SYNTAX_QUOTE_RE = re.compile(r"`[(\[{\w]")
+
+
+def _changed_code(diff_text: str) -> str:
+    """Code on added/removed lines, with string literals and comments blanked.
+
+    Context lines, file headers and hunk headers aren't part of the change.
+    """
+    out = []
+    for line in diff_text.splitlines():
+        if not line or line[0] not in "+-" or line.startswith(("+++ ", "--- ")):
+            continue
+        out.append(_COMMENT_RE.sub("", _STRING_RE.sub('""', line[1:])))
+    return "\n".join(out)
+
+
+def _tokens(code: str) -> Set[str]:
+    """Whole Clojure tokens, with alias-qualified async/spec forms normalized."""
+    toks = set()
+    for t in _TOKEN_RE.findall(code):
+        toks.add(t)
+        ns, _, name = t.rpartition("/")
+        if ns in _ASYNC_NS and name:
+            toks.add(name)
+        elif ns in _SPEC_NS and name:
+            toks.add(f"s/{name}")
+    if _DEREF_RE.search(code):
+        toks.add("@")
+    if _SYNTAX_QUOTE_RE.search(code) and "~" in code:
+        toks.add("`")  # syntax-quote template with unquotes: macro-style code
+    return toks
 
 
 def classify_diff(diff_text: str, changed_files: List[str]) -> DiffClassification:
@@ -79,18 +120,16 @@ def classify_diff(diff_text: str, changed_files: List[str]) -> DiffClassificatio
     if not clj_files:
         return result
 
-    # Inline the diff content
-    content = diff_text.lower()
+    toks = _tokens(_changed_code(diff_text))
 
-    # Detect patterns by keyword presence
-    _check_pure_refactor(result, content, clj_files)
-    _check_state_machine(result, content)
-    _check_side_effect_isolation(result, content, clj_files)
-    _check_macro(result, content)
-    _check_protocol(result, content)
-    _check_spec(result, content)
-    _check_async(result, content)
-    _check_multimethod(result, content)
+    _check_pure_refactor(result, toks, clj_files)
+    _check_state_machine(result, toks)
+    _check_side_effect_isolation(result, toks, clj_files)
+    _check_macro(result, toks)
+    _check_protocol(result, toks)
+    _check_spec(result, toks)
+    _check_async(result, toks)
+    _check_multimethod(result, toks)
 
     return result
 
@@ -102,7 +141,7 @@ def _is_clojure_source(path: str) -> bool:
 
 def _check_pure_refactor(
     result: DiffClassification,
-    content: str,
+    toks: Set[str],
     files: List[str],
 ) -> None:
     """Detect pure-function refactoring: structural changes without side effects."""
@@ -110,37 +149,31 @@ def _check_pure_refactor(
     source_only = all(_is_clojure_source(f) for f in files)
 
     # No side-effecting forms added
-    has_side_effects = any(form in content for form in _SIDE_EFFECT_FORMS)
+    has_side_effects = bool(toks & _SIDE_EFFECT_FORMS)
     has_io_files = any(
         f.endswith((".edn", ".xml", ".properties", ".json")) for f in files
     )
 
     # Check for structural refactoring indicators
-    has_structure = any(
-        kw in content for kw in ("->", "->>", "comp", "partial",
-                                  "update", "assoc", "dissoc", "get-in",
-                                  "map", "filter", "reduce", "mapcat")
-    )
+    has_structure = bool(toks & {"->", "->>", "comp", "partial",
+                                 "update", "assoc", "dissoc", "get-in",
+                                 "map", "filter", "reduce", "mapcat"})
 
     if source_only and not has_side_effects and not has_io_files and has_structure:
         result.is_pure_refactor = True
         result.patterns_found.append("pure-refactor")
 
 
-def _check_state_machine(result: DiffClassification, content: str) -> None:
+def _check_state_machine(result: DiffClassification, toks: Set[str]) -> None:
     """Detect state-machine changes: atom/ref/agent patterns."""
-    concurrency_count = sum(1 for form in _CONCURRENCY_FORMS if form in content)
-    if concurrency_count >= 2:
-        result.is_state_machine = True
-        result.patterns_found.append("state-machine")
-    elif "atom" in content and "swap!" in content:
+    if len(toks & _CONCURRENCY_FORMS) >= 2:
         result.is_state_machine = True
         result.patterns_found.append("state-machine")
 
 
 def _check_side_effect_isolation(
     result: DiffClassification,
-    content: str,
+    toks: Set[str],
     files: List[str],
 ) -> None:
     """Detect side-effect isolation: moving I/O to dedicated namespaces."""
@@ -154,43 +187,43 @@ def _check_side_effect_isolation(
         any(p in f.lower() for p in core_file_patterns) for f in files
     )
 
-    has_side_effects = any(form in content for form in _SIDE_EFFECT_FORMS)
+    has_side_effects = bool(toks & _SIDE_EFFECT_FORMS)
 
     if has_side_effects and touched_effect and not touched_core:
         result.is_side_effect_isolation = True
         result.patterns_found.append("side-effect-isolation")
 
 
-def _check_macro(result: DiffClassification, content: str) -> None:
+def _check_macro(result: DiffClassification, toks: Set[str]) -> None:
     """Detect macro creation/modification."""
-    if any(form in content for form in _MACRO_FORMS):
+    if toks & _MACRO_FORMS or "`" in toks:
         result.is_macro_change = True
         result.patterns_found.append("macro")
 
 
-def _check_protocol(result: DiffClassification, content: str) -> None:
+def _check_protocol(result: DiffClassification, toks: Set[str]) -> None:
     """Detect protocol/record/type changes."""
-    if any(form in content for form in _PROTOCOL_FORMS):
+    if toks & _PROTOCOL_FORMS:
         result.is_protocol_change = True
         result.patterns_found.append("protocol")
 
 
-def _check_spec(result: DiffClassification, content: str) -> None:
+def _check_spec(result: DiffClassification, toks: Set[str]) -> None:
     """Detect clojure.spec additions."""
-    if any(form in content for form in _SPEC_FORMS):
+    if toks & _SPEC_FORMS:
         result.is_spec_change = True
         result.patterns_found.append("spec")
 
 
-def _check_async(result: DiffClassification, content: str) -> None:
+def _check_async(result: DiffClassification, toks: Set[str]) -> None:
     """Detect core.async channel/go-loop changes."""
-    if any(form in content for form in _ASYNC_FORMS):
+    if toks & _ASYNC_FORMS:
         result.is_async_change = True
         result.patterns_found.append("async")
 
 
-def _check_multimethod(result: DiffClassification, content: str) -> None:
+def _check_multimethod(result: DiffClassification, toks: Set[str]) -> None:
     """Detect multimethod changes."""
-    if any(form in content for form in _MULTIMETHOD_FORMS):
+    if toks & _MULTIMETHOD_FORMS:
         result.is_multimethod_change = True
         result.patterns_found.append("multimethod")

@@ -15,8 +15,9 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple
 from copy import deepcopy
 
-from ...llm.provider import LLMProvider
+from ...llm.provider import LLMAuthError, LLMError, LLMProvider
 from .construct_tree import FeatureTree, FeatureTreeNode, build_baseline_tree
+from .llm_json import parse_json_list
 
 
 @dataclass
@@ -24,6 +25,7 @@ class EvolConfig:
     """Configuration for feature tree evolution."""
     max_breadth_nodes: int = 8   # Max new root categories per pass
     max_depth_nodes: int = 12    # Max new subcategories per pass
+    max_depth_categories: int = 5  # Max categories expanded per depth pass
     max_detail_features: int = 20  # Max new leaf features per pass
     llm_temperature: float = 0.7
     llm_max_tokens: int = 4096
@@ -67,8 +69,9 @@ def evolve_breadth(
     prompt = (
         "Existing taxonomy categories:\n" +
         json.dumps(existing, indent=2) +
-        "\n\nSuggest NEW top-level categories not already covered. "
-        "Focus on Clojure-specific development domains and language features."
+        "\n\nSuggest NEW top-level categories not already covered, each with "
+        "its subcategories. Focus on Clojure-specific development domains and "
+        "language features."
     )
 
     try:
@@ -78,11 +81,12 @@ def evolve_breadth(
             temperature=config.llm_temperature,
             max_tokens=config.llm_max_tokens,
             require_json=True,
+            reject_truncated=True,
         )
-        new_categories = json.loads(result) if isinstance(result, str) else result
-        if isinstance(new_categories, dict):
-            new_categories = [new_categories]
-    except Exception:
+        new_categories = parse_json_list(result, "categories")
+    except LLMAuthError:
+        raise
+    except (LLMError, ValueError):
         return tree
 
     # Add new categories to tree
@@ -103,9 +107,10 @@ def evolve_breadth(
         tree.root_count += 1
 
         # Add subcategories
-        for sub in cat.get("subcategories", [])[:config.max_depth_nodes]:
+        subs = cat.get("subcategories")
+        for sub in (subs if isinstance(subs, list) else [])[:config.max_depth_nodes]:
             sub_id = _node_id(sub)
-            if not sub_id:
+            if not sub_id or f"{cat_id}/{sub_id}" in tree.nodes:
                 continue
             sub_name = f"{cat_id}/{sub_id}"
             sub_node = FeatureTreeNode(
@@ -133,13 +138,19 @@ def evolve_depth(
     if config is None:
         config = EvolConfig()
 
-    # Find categories with few subcategories to expand
+    # Find categories with few subcategories to expand, sparsest first, so
+    # roots added by breadth evolution (with few or no children) get expanded
+    # too instead of the first few baseline categories every time. Shuffling
+    # before the stable sort varies which of the equally sparse ones go first.
     root_nodes = [
         (name, node) for name, node in tree.nodes.items()
         if node.depth == 0 and len(node.children) < 8
     ]
+    random.shuffle(root_nodes)
+    root_nodes.sort(key=lambda item: len(item[1].children))
 
-    for cat_name, cat_node in root_nodes[:5]:  # evolve at most 5
+    added = 0
+    for cat_name, cat_node in root_nodes[:config.max_depth_categories]:
         existing_subs = [
             {
                 "id": child_name.split("/")[-1] if "/" in child_name else child_name,
@@ -163,22 +174,22 @@ def evolve_depth(
                 temperature=config.llm_temperature,
                 max_tokens=config.llm_max_tokens,
                 require_json=True,
+                reject_truncated=True,
             )
-            suggestions = json.loads(result) if isinstance(result, str) else result
-            if isinstance(suggestions, dict):
-                suggestions = [suggestions]
-        except Exception:
+            suggestions = parse_json_list(result, "subcategories")
+        except LLMAuthError:
+            raise
+        except (LLMError, ValueError):
             continue
 
-        added = 0
         for s in suggestions:
-            if not isinstance(s, dict):
-                continue
             # Accept a {new_subcategories: [...]} wrapper or a bare subcategory.
             subs = s.get("new_subcategories") or s.get("subcategories")
-            if not subs:
+            if not isinstance(subs, list):
                 subs = [s] if _node_id(s) else []
             for new_sub in subs:
+                if not isinstance(new_sub, dict):
+                    continue
                 if added >= config.max_depth_nodes:
                     break
                 sub_id = _node_id(new_sub)
@@ -244,16 +255,21 @@ def evolve_detail(
                 temperature=config.llm_temperature,
                 max_tokens=config.llm_max_tokens,
                 require_json=True,
+                reject_truncated=True,
             )
-            new_features = json.loads(result) if isinstance(result, str) else result
-            if isinstance(new_features, dict):
-                new_features = [new_features]
-        except Exception:
+            new_features = parse_json_list(result, "features")
+        except LLMAuthError:
+            raise
+        except (LLMError, ValueError):
             continue
 
+        existing_names = {f.get("name") for f in node.features}
         for feat in new_features:
-            if not isinstance(feat, dict):
+            name = feat.get("name")
+            # A nameless feature can't seed a task; skip it and duplicates.
+            if not isinstance(name, str) or not name.strip() or name in existing_names:
                 continue
+            existing_names.add(name)
             feat.setdefault("feature_type", node_name.split("/")[-1] if "/" in node_name else node_name)
             feat.setdefault("complexity", "moderate")
             node.features.append(feat)

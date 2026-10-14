@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 import re
 from typing import List
 
+from ..diffs import split_lines
+
 
 @dataclass
 class DiffHunk:
@@ -45,8 +47,24 @@ def parse_diff(diff_text: str) -> List[DiffFile]:
     current_file: DiffFile | None = None
     current_hunk: DiffHunk | None = None
     rename_src: str | None = None
+    old_left = new_left = 0  # body lines still owed to the current hunk
 
-    for line in diff_text.splitlines():
+    for line in split_lines(diff_text):
+        # Inside a hunk body, every line is content until the header's counts
+        # are used up — a removed "-- x" line looks like a '--- ' file header.
+        if (current_hunk is not None and (old_left > 0 or new_left > 0)
+                and (line == "" or line[0] in " +-\\")):
+            current_hunk.lines.append(line)
+            tag = line[:1]
+            if tag in (" ", ""):
+                old_left -= 1
+                new_left -= 1
+            elif tag == "-":
+                old_left -= 1
+            elif tag == "+":
+                new_left -= 1
+            continue
+
         # File header: diff --git a/path b/path
         m = _DIFF_HEADER.match(line)
         if m:
@@ -104,6 +122,7 @@ def parse_diff(diff_text: str) -> List[DiffFile]:
                 new_count=new_count,
             )
             current_file.hunks.append(current_hunk)
+            old_left, new_left = old_count, new_count
             continue
 
         # Content lines within hunk

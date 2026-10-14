@@ -1,0 +1,275 @@
+"""Mine Clojure repositories for before/after code training pairs.
+
+End-to-end workflow:
+  1. Clone or use local repositories
+  2. Walk git history filtering for Clojure-relevant commits
+  3. Extract before/after file states + diffs
+  4. Group into PR sessions
+  5. Classify by Clojure development pattern
+  6. Output LLaMA-Factory compatible JSONL training data
+
+Usage:
+    # Mine a single local repo
+    python scripts/mine_clojure_repos.py --repo /path/to/repo
+
+    # Mine from a list of repos (one per line, GitHub URLs or local paths)
+    python scripts/mine_clojure_repos.py --repo-file repos.txt
+
+    # Filter by specific patterns
+    python scripts/mine_clojure_repos.py --repo /path/to/repo \\
+        --pattern pure-refactor --pattern state-machine
+
+    # Output to file (default: stdout)
+    python scripts/mine_clojure_repos.py --repo /path/to/repo \\
+        --output training_data.jsonl
+
+    # Sample repos to get started (modify or replace):
+    #   metabase/metabase, babashka/babashka, clj-kondo/clj-kondo,
+    #   ring-clojure/ring, compojure/compojure, reagent-project/reagent,
+    #   day8/re-frame, pedestal/pedestal, xtdb/xtdb
+"""
+
+import argparse
+import sys
+import subprocess
+import tempfile
+from pathlib import Path
+from typing import List, Optional
+from collections import Counter
+
+
+from src.codeflow.git_mining.miner import CHAIN_CHARS, MinedChain, mine_repository
+from src.codeflow.git_mining.pattern_classifier import DiffClassification, classify_diff
+
+# --pattern choice -> DiffClassification field.
+PATTERN_ATTRS = {
+    "pure-refactor": "is_pure_refactor",
+    "state-machine": "is_state_machine",
+    "side-effect-isolation": "is_side_effect_isolation",
+    "macro": "is_macro_change",
+    "protocol": "is_protocol_change",
+    "spec": "is_spec_change",
+    "async": "is_async_change",
+    "multimethod": "is_multimethod_change",
+}
+
+
+def matches_patterns(c: DiffClassification, patterns: List[str]) -> bool:
+    """True if the classification has any of the requested patterns."""
+    return any(getattr(c, PATTERN_ATTRS[p]) for p in patterns)
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Mine Clojure repositories for training data",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__,
+    )
+    repo_group = parser.add_mutually_exclusive_group(required=True)
+    repo_group.add_argument(
+        "--repo", type=str,
+        help="Path to a local Clojure repository",
+    )
+    repo_group.add_argument(
+        "--repo-file", type=str,
+        help="File with one repo path/URL per line",
+    )
+    parser.add_argument(
+        "--output", "-o", type=str, default="-",
+        help="Output file (default: stdout)",
+    )
+    parser.add_argument(
+        "--max-commits", type=int, default=500,
+        help="Max commits to scan per repo (default: 500)",
+    )
+    parser.add_argument(
+        "--since", type=str, default=None,
+        help="Only commits after this date (e.g., '2024-01-01')",
+    )
+    parser.add_argument(
+        "--triplet-span", type=int, default=3,
+        help="Commits per (R_old, P, R_new) arc (default: 3; 1 = per-commit)",
+    )
+    parser.add_argument(
+        "--lifecycle-window", type=str, default="0.4,0.8",
+        help="Percentile band of project life to mine, e.g. '0.4,0.8' "
+             "(IQuest mature phase). Pass 'none' to mine full history.",
+    )
+    parser.add_argument(
+        "--chain-max", type=int, default=4,
+        help="Link up to this many consecutive arcs on the same files into one "
+             "multi-turn history chain (default: 4; 1 = independent arcs)",
+    )
+    parser.add_argument(
+        "--chain-chars", type=int, default=CHAIN_CHARS,
+        help=f"Character budget for a chain's turns (default: {CHAIN_CHARS})",
+    )
+    parser.add_argument(
+        "--pattern", type=str, action="append", dest="patterns",
+        choices=list(PATTERN_ATTRS),
+        help="Only include examples matching these Clojure patterns",
+    )
+    parser.add_argument(
+        "--stats", action="store_true",
+        help="Print mining statistics to stderr",
+    )
+    parser.add_argument(
+        "--clone-dir", type=str, default=None,
+        help="Directory to clone repos into (default: system temp dir)",
+    )
+    parser.add_argument(
+        "--clone-depth", type=int, default=0,
+        help="git clone depth (0 = full history; required for lifecycle "
+             "windowing). Shallow clones skew the 40-80%% percentile window.",
+    )
+    return parser.parse_args()
+
+
+def resolve_repos(args: argparse.Namespace) -> List[str]:
+    """Resolve repository paths from arguments."""
+    if args.repo:
+        return [args.repo]
+
+    repos = []
+    with open(args.repo_file) as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith("#"):
+                repos.append(line)
+    return repos
+
+
+def clone_target(repo: str, clone_dir: str) -> Path:
+    """Clone directory for a repo, ``owner__name`` so same-named repos don't collide."""
+    path = repo.rstrip("/")
+    if path.endswith(".git"):
+        path = path[:-4]
+    parts = [p for p in path.replace(":", "/").split("/") if p]
+    name = "__".join(parts[-2:]) if len(parts) >= 2 else parts[-1]
+    return Path(clone_dir) / name
+
+
+def clone_if_needed(repo: str, clone_dir: str, depth: int = 0) -> Optional[str]:
+    """Clone a remote repo if needed, return local path or None.
+
+    depth=0 does a full clone — required for lifecycle windowing, which walks
+    the whole history to find the 40-80% percentile. A shallow clone would only
+    expose the recent tail and skew the window.
+    """
+    path = Path(repo)
+    if path.is_dir():
+        return str(path.resolve())
+
+    # Try as GitHub shorthand: "owner/repo" or full URL
+    if "/" in repo and not repo.startswith(("http://", "https://", "git@")):
+        url = f"https://github.com/{repo}.git"
+    else:
+        url = repo
+
+    target = clone_target(repo, clone_dir)
+
+    if target.exists():
+        return str(target)
+
+    clone_cmd = ["git", "clone"]
+    if depth and depth > 0:
+        clone_cmd.append(f"--depth={depth}")
+    clone_cmd += [url, str(target)]
+    try:
+        subprocess.run(
+            clone_cmd,
+            check=True, capture_output=True, text=True,
+        )
+        return str(target)
+    except subprocess.CalledProcessError as e:
+        print(f"Failed to clone {url}: {e.stderr}", file=sys.stderr)
+        return None
+
+
+def _mine_all(args, repos, clone_dir, lifecycle_window, stats, out):
+    for repo in repos:
+        local_path = clone_if_needed(repo, clone_dir, depth=args.clone_depth)
+        if not local_path:
+            stats["failed_clone"] += 1
+            continue
+
+        repo_name = Path(local_path).name
+        print(f"Mining {repo_name}...", file=sys.stderr)
+
+        try:
+            examples = mine_repository(
+                local_path,
+                repo_name=repo_name,
+                max_commits=args.max_commits,
+                since=args.since,
+                lifecycle_window=lifecycle_window,
+                triplet_span=args.triplet_span,
+                chain_max=args.chain_max,
+                chain_chars=args.chain_chars,
+            )
+        except Exception as e:
+            print(f"Error mining {repo_name}: {e}", file=sys.stderr)
+            stats["failed_mine"] += 1
+            continue
+
+        # Apply pattern filter if requested
+        if args.patterns:
+            filtered = [
+                ex for ex in examples
+                if any(matches_patterns(classify_diff(t.diff, t.changed_files), args.patterns)
+                       for t in getattr(ex, "turns", [ex]))
+            ]
+            stats["filtered_out"] += len(examples) - len(filtered)
+            examples = filtered
+
+        for ex in examples:
+            out.write(ex.to_jsonl() + "\n")
+        out.flush()
+        chains = [ex for ex in examples if isinstance(ex, MinedChain)]
+        stats[f"repo_{repo_name}"] = len(examples)
+        stats["total_examples"] += len(examples)
+        stats["chains"] += len(chains)
+        stats["chain_turns"] += sum(len(c.turns) for c in chains)
+
+        print(f"  {repo_name}: {len(examples)} examples ({len(chains)} chains)", file=sys.stderr)
+
+
+def main():
+    args = parse_args()
+    repos = resolve_repos(args)
+
+    if args.lifecycle_window.strip().lower() == "none":
+        lifecycle_window = None
+    else:
+        lo, hi = (float(x) for x in args.lifecycle_window.split(","))
+        lifecycle_window = (lo, hi)
+
+    clone_dir = args.clone_dir or tempfile.mkdtemp(prefix="clj-mine-")
+    stats = Counter()
+
+    # Records go out as each repo finishes: a shard runs for hours, and
+    # holding them all costs memory (every git call forks the process) and
+    # loses everything on a crash.
+    out = open(args.output, "w") if args.output != "-" else sys.stdout
+    try:
+        _mine_all(args, repos, clone_dir, lifecycle_window, stats, out)
+    finally:
+        if out is not sys.stdout:
+            out.close()
+
+    # Print stats
+    if args.stats:
+        print("\n--- Mining Statistics ---", file=sys.stderr)
+        print(f"Repos processed: {len(repos)}", file=sys.stderr)
+        print(f"Total examples: {stats['total_examples']} "
+              f"({stats['chains']} chains, {stats['chain_turns']} turns)", file=sys.stderr)
+        print(f"Failed clones: {stats['failed_clone']}", file=sys.stderr)
+        print(f"Failed mines: {stats['failed_mine']}", file=sys.stderr)
+        if args.patterns:
+            print(f"Filtered out: {stats['filtered_out']}", file=sys.stderr)
+        print(f"Output: {args.output if args.output != '-' else 'stdout'}",
+              file=sys.stderr)
+
+
+if __name__ == "__main__":
+    main()

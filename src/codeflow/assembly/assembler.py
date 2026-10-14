@@ -5,9 +5,11 @@ Produces a merged JSONL dataset ready for LLaMA-Factory training.
 
 import json
 import random
+import re
+import sys
 from collections import Counter
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from ...shared import (
     compute_dedup_key,
@@ -27,7 +29,7 @@ _BUG_KEYWORDS = [
 
 _REFACTOR_KEYWORDS = [
     "refactor", "cleanup", "clean up", "restructure", "reorganize",
-    "simplify", "extract", "rename", "move", "rename", "dry",
+    "simplify", "extract", "rename", "move", "dry",
     "technical debt", "tech debt", "redundant", "consolidate",
     "split", "merge", "decompose", "composition", "extract function",
 ]
@@ -41,7 +43,7 @@ _FEATURE_KEYWORDS = [
 _OPTIMIZE_KEYWORDS = [
     "optimize", "performance", "perf", "faster", "slow", "speed",
     "memory", "reduce", "lazy", "cache", "memoize", "throughput",
-    "bottleneck", "profile", "transducer", "reduce",
+    "bottleneck", "profile", "transducer",
 ]
 
 _TEST_KEYWORDS = [
@@ -57,27 +59,26 @@ _DOCS_KEYWORDS = [
 def classify_example(example: dict) -> str:
     """Classify a training example by change type.
 
-    Examines both the instruction and output fields for keyword signals.
-    Returns one of: bug-fix, refactor, add-feature, optimize, test, docs,
-    or refactor (default).
+    Reads only the instruction: that is what was asked for, while the code in
+    input/output is full of identifiers like ``add`` or ``error``. Returns one
+    of: bug-fix, refactor, add-feature, optimize, test, or refactor (default;
+    docs folds into it).
     """
-    text = " ".join([
-        example.get("instruction", ""),
-        example.get("output", ""),
-        example.get("input", ""),
-    ]).lower()
+    text = example.get("instruction", "").lower()
 
+    # Ties go to the earlier type. Mined instructions join several commit
+    # messages, so a fix wins over a passing mention of tests; "add" is the
+    # most generic verb ("add tests" is a test change) and comes last.
     scores = {
         "bug-fix": _count_keywords(text, _BUG_KEYWORDS),
+        "test": _count_keywords(text, _TEST_KEYWORDS),
+        "optimize": _count_keywords(text, _OPTIMIZE_KEYWORDS),
+        "docs": _count_keywords(text, _DOCS_KEYWORDS),
         "refactor": _count_keywords(text, _REFACTOR_KEYWORDS),
         "add-feature": _count_keywords(text, _FEATURE_KEYWORDS),
-        "optimize": _count_keywords(text, _OPTIMIZE_KEYWORDS),
-        "test": _count_keywords(text, _TEST_KEYWORDS),
-        "docs": _count_keywords(text, _DOCS_KEYWORDS),
     }
 
-    # Use the highest-scoring category
-    best = max(scores, key=scores.get)
+    best = max(scores, key=lambda k: scores[k])
     if scores[best] > 0:
         # docs is too sparse to balance as its own bucket; fold it into refactor
         # (both are non-behavioral cleanup) so there is no singleton category.
@@ -85,9 +86,29 @@ def classify_example(example: dict) -> str:
     return "refactor"
 
 
+def _keyword_re(keyword: str) -> "re.Pattern[str]":
+    # Whole words, allowing simple inflections: fix/fixes/fixed/fixing,
+    # add/adds/added/adding. "fix" doesn't match "prefix", "add" not "address".
+    stem = re.escape(keyword)
+    if keyword.endswith("e"):
+        inflect = r"(?:s|d)?|" + re.escape(keyword[:-1]) + "ing"
+        return re.compile(rf"\b(?:{stem}{inflect})\b")
+    last = re.escape(keyword[-1])
+    return re.compile(rf"\b{stem}(?:s|es|ed|ing|{last}ed|{last}ing)?\b")
+
+
+_KEYWORD_RES: Dict[str, "re.Pattern[str]"] = {}
+
+
 def _count_keywords(text: str, keywords: List[str]) -> int:
-    """Count how many keywords appear in the text."""
-    return sum(1 for kw in keywords if kw in text)
+    """Count how many keywords appear in the text as words."""
+    n = 0
+    for kw in keywords:
+        pat = _KEYWORD_RES.get(kw)
+        if pat is None:
+            pat = _KEYWORD_RES[kw] = _keyword_re(kw)
+        n += bool(pat.search(text))
+    return n
 
 
 def deduplicate(records: List[dict]) -> List[dict]:
@@ -102,13 +123,32 @@ def deduplicate(records: List[dict]) -> List[dict]:
     return result
 
 
+NEAR_DUP_THRESHOLD = 0.8
+
+
+def drop_near_duplicates(records: List[dict],
+                         threshold: float = NEAR_DUP_THRESHOLD) -> Tuple[List[dict], int]:
+    """Keep the first record of each near-duplicate cluster (see near_dup.py);
+    returns (kept, number dropped)."""
+    from .near_dup import near_duplicate_clusters, record_text
+
+    ids = near_duplicate_clusters([record_text(r) for r in records], threshold)
+    seen, kept = set(), []
+    for r, c in zip(records, ids):
+        if c not in seen:
+            seen.add(c)
+            kept.append(r)
+    return kept, len(records) - len(kept)
+
+
 def _example_chars(record: dict) -> int:
     """Total character length of the trainable fields of an example.
 
-    Counts instruction + input + output. The system prompt is a constant
-    preamble, so it is excluded — what matters here is the per-example payload
-    that has to fit inside the training context window.
+    Counts instruction + input + output, or every turn of a multi-turn trace.
+    A cheap pre-filter; the exact check is the token filter (token_length.py).
     """
+    if record.get("conversations"):
+        return sum(len(t.get("value", "")) for t in record["conversations"])
     return (
         len(record.get("instruction", ""))
         + len(record.get("input", ""))
@@ -166,6 +206,9 @@ def filter_trivial_diffs(
     kept = []
     for r in records:
         out = r.get("output", "")
+        if r.get("conversations") and r.get("source") != "synthetic":
+            # A history chain: judged on all its turns together.
+            out = "\n".join(t["value"] for t in r["conversations"] if t["from"] == "gpt")
         if r.get("source") == "synthetic" or "diff --git" not in out:
             kept.append(r)
         elif count_changed_lines(out) >= min_changed_lines:
@@ -199,10 +242,8 @@ def balance_by_type(
 ) -> List[dict]:
     """Balance the dataset so no single change type dominates.
 
-    If max_per_type is None, it is set to the count of the smallest type,
-    effectively capping all types at the minority class size.
-
-    Records beyond the cap are randomly sampled (not just truncated).
+    Types larger than ``max_per_type`` are randomly sampled down to it. None
+    means no cap: every record is kept.
     """
     if not records:
         return []
@@ -214,7 +255,7 @@ def balance_by_type(
         by_type.setdefault(t, []).append(rec)
 
     if max_per_type is None:
-        max_per_type = min(len(v) for v in by_type.values())
+        return list(records)
 
     rng = random.Random(seed)
     balanced = []
@@ -244,7 +285,8 @@ def assemble_dataset(
     2. Load all synthetic records
     3. Merge into one list
     4. Deduplicate (keep first occurrence — typically git-mined wins)
-    5. Drop records too large for the training context window
+    5. Drop records too large for the training context window, then near-
+       duplicates (MinHash; the same change in a fork or imported history)
     6. Balance by change type
     7. Write to output_path as JSONL
     8. Return the assembled records
@@ -284,8 +326,16 @@ def assemble_dataset(
         if rec.get("instruction"):
             rec["instruction"] = clean_instruction(rec["instruction"])
 
+    # One-shot synthetic traces put ;; result: lines in the loss, teaching the
+    # model to write REPL output instead of waiting for it. Only live
+    # multi-turn traces (observations masked) are kept; regenerate older sets.
+    records = [r for r in records if r["source"] != "synthetic" or r.get("conversations")]
+
     records = deduplicate(records)
     records = filter_by_length(records, max_chars=max_chars)
+    records, near = drop_near_duplicates(records)
+    if near:
+        print(f"Dropped {near} near-duplicate records", file=sys.stderr)
     records = filter_trivial_diffs(records, min_changed_lines=min_changed_lines)
 
     # Balance only the abundant git-mined pool by change type. The synthetic

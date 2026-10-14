@@ -1,0 +1,203 @@
+"""Assemble a Code Flow training dataset for LLaMA-Factory.
+
+Merges git-mined and synthetic Clojure code-evolution data,
+deduplicates, balances by change type, formats for LLaMA-Factory,
+and validates the output.
+
+Usage:
+    assemble_codeflow_dataset \\
+        --git-dir data/git-mining/output \\
+        --synth-dir data/synthetic/output \\
+        --output data/training/codeflow.jsonl \\
+        --validation-report data/training/validation_report.json
+"""
+
+import argparse
+import json
+import sys
+from collections import Counter
+from pathlib import Path
+
+from src.codeflow.assembly.assembler import assemble_dataset
+from src.codeflow.assembly.formatter import format_jsonl_file
+from src.codeflow.assembly.token_length import filter_by_tokens, load_tokenizer
+from src.shared import load_jsonl, write_jsonl
+from src.codeflow.assembly.validator import validate_jsonl_file
+
+
+def parse_args() -> argparse.Namespace:
+    """Parse command-line arguments."""
+    parser = argparse.ArgumentParser(
+        description="Assemble Code Flow training dataset for Clojure LoRA training",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__,
+    )
+
+    parser.add_argument(
+        "--git-dir",
+        action="append",
+        required=True,
+        metavar="DIR",
+        help="Directory containing git-mined JSONL data (repeatable)",
+    )
+    parser.add_argument(
+        "--synth-dir",
+        action="append",
+        required=True,
+        metavar="DIR",
+        help="Directory containing synthetic JSONL data (repeatable)",
+    )
+    parser.add_argument(
+        "--output",
+        required=True,
+        metavar="FILE",
+        help="Path for merged output JSONL file",
+    )
+    parser.add_argument(
+        "--max-per-type",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Max records per change type for balancing (default: no cap)",
+    )
+    parser.add_argument(
+        "--max-chars",
+        type=int,
+        default=50000,
+        metavar="N",
+        help="Cheap pre-filter: drop records whose instruction+input+output "
+             "exceeds N chars, before the exact token filter. Default 50000; "
+             "pass 0 to disable.",
+    )
+    parser.add_argument(
+        "--tokenizer",
+        default="Qwen/Qwen3.8-27B",
+        metavar="NAME",
+        help="Tokenizer of the model being trained, for the length filter "
+             "(default: Qwen/Qwen3.8-27B, as in configs/codeflow_lora_qwen.yaml)",
+    )
+    parser.add_argument(
+        "--cutoff-len",
+        type=int,
+        default=16384,
+        metavar="N",
+        help="Drop records longer than N tokens after the chat template "
+             "(LLaMA-Factory cutoff_len; default 16384). Pass 0 to disable.",
+    )
+    parser.add_argument(
+        "--min-changed-lines",
+        type=int,
+        default=4,
+        metavar="N",
+        help="Drop git transitions whose diff changes fewer than N lines "
+             "(low-signal trivial edits). Default 4; pass 0 to disable.",
+    )
+    parser.add_argument(
+        "--no-format",
+        action="store_true",
+        help="Skip LLaMA-Factory format standardization",
+    )
+    parser.add_argument(
+        "--no-validate",
+        action="store_true",
+        help="Skip dataset validation",
+    )
+    parser.add_argument(
+        "--validation-report",
+        metavar="FILE",
+        default=None,
+        help="Path for validation report JSON (only if --no-validate not set)",
+    )
+    parser.add_argument(
+        "--keep-invalid",
+        action="store_true",
+        help="Report invalid records but keep them in the output (debugging only)",
+    )
+
+    return parser.parse_args()
+
+
+def main() -> int:
+    """Run the dataset assembly pipeline. Returns 0 on success, 1 on error."""
+    args = parse_args()
+
+    git_paths = [Path(d) for d in args.git_dir]
+    synth_paths = [Path(d) for d in args.synth_dir]
+    output_path = Path(args.output)
+
+    # Validate inputs
+    for p in git_paths + synth_paths:
+        if not p.exists():
+            print(f"ERROR: path does not exist: {p}", file=sys.stderr)
+            return 1
+
+    print(f"Assembling dataset...")
+    print(f"  Git sources:  {len(git_paths)}")
+    print(f"  Synth sources: {len(synth_paths)}")
+    print(f"  Output:       {output_path}")
+    if args.max_per_type:
+        print(f"  Max/type:     {args.max_per_type}")
+    max_chars = args.max_chars or None  # treat 0 as "no limit"
+    if max_chars:
+        print(f"  Max chars:    {max_chars}")
+    if args.cutoff_len:
+        print(f"  Cutoff:       {args.cutoff_len} tokens ({args.tokenizer})")
+    if args.min_changed_lines:
+        print(f"  Min Δ lines:  {args.min_changed_lines} (drops trivial diffs)")
+
+    # Step 1: Assemble (merge + deduplicate + length-filter + balance)
+    records = assemble_dataset(
+        git_paths=git_paths,
+        synth_paths=synth_paths,
+        output_path=output_path,
+        max_per_type=args.max_per_type,
+        max_chars=max_chars,
+        min_changed_lines=args.min_changed_lines,
+    )
+    print(f"  Assembled:    {len(records)} records")
+    src_counts = Counter(r.get("source", "unknown") for r in records)
+    if len(src_counts) > 1 or "unknown" not in src_counts:
+        print("  By source:    " + ", ".join(
+            f"{src}={n}" for src, n in sorted(src_counts.items())))
+
+    # Step 2: Format for LLaMA-Factory
+    if not args.no_format:
+        count = format_jsonl_file(output_path, output_path)
+        print(f"  Formatted:    {count} records (LLaMA-Factory standard)")
+    else:
+        print("  Formatting:   skipped (--no-format)")
+
+    # Step 3: Drop what the trainer would truncate, measured on the rendered
+    # template (system prompts are assigned by now).
+    if args.cutoff_len:
+        kept, dropped = filter_by_tokens(load_jsonl(output_path),
+                                         load_tokenizer(args.tokenizer), args.cutoff_len)
+        write_jsonl(kept, output_path)
+        print(f"  Token filter: {len(kept)} kept, {len(dropped)} over {args.cutoff_len} tokens"
+              + (f" (longest {max(dropped)})" if dropped else ""))
+
+    # Step 4: Validate
+    if not args.no_validate:
+        report_path = Path(args.validation_report or str(output_path).replace(".jsonl", "_validation_report.json"))
+        summary = validate_jsonl_file(
+            output_path, report_path,
+            filtered_path=None if args.keep_invalid else output_path,
+        )
+        print(f"  Validation:   {summary['valid']}/{summary['total']} valid (avg score: {summary['avg_score']})")
+        if summary["invalid"] > 0:
+            action = "kept (--keep-invalid)" if args.keep_invalid else "dropped"
+            print(f"  WARNING: {summary['invalid']} invalid records {action} — see {report_path}")
+            report_data = json.loads(report_path.read_text())
+            for result in report_data.get("results", []):
+                if not result["is_valid"]:
+                    print(f"    record {result['index']}: score={result['total_score']} "
+                          f"warnings={result['warnings']}")
+    else:
+        print("  Validation:   skipped (--no-validate)")
+
+    print("Done.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

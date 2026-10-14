@@ -23,7 +23,7 @@ The trained model learns to develop Clojure code interactively via nREPL — eva
                                               ┌─────────▼─────────┐
                                               │  LLaMA-Factory     │
                                               │  LoRA fine-tune    │
-                                              │  Qwen3.6-Coder-27B │
+                                              │  Qwen3.8-27B       │
                                               └───────────────────┘
 ```
 
@@ -64,11 +64,21 @@ uv run python3 scripts/generate_synthetic_data.py \
     --output data/synthetic/output \
     --target 500
 
+# Reasoning: thinking mode trains a <think> block on every answer, so mined
+# transitions get the reasoning behind each change (needs an LLM)
+LLM_PROVIDER=deepseek uv run clj-lora-add-reasoning \
+    --input data/git-mining/output/mined.jsonl \
+    --output data/assemble/git/mined.jsonl
+
 # Assembly: merge, deduplicate, balance, format
 uv run python3 scripts/assemble_codeflow_dataset.py \
     --git-dir data/git-mining/output \
     --synth-dir data/synthetic/output \
     --output data/training/codeflow.jsonl
+
+# The same commands are installed as clj-lora-mine, clj-lora-generate-synthetic,
+# clj-lora-generate-workflows, clj-lora-add-reasoning, clj-lora-assemble and
+# clj-lora-split.
 
 # Run tests
 uv run python3 -m pytest
@@ -110,26 +120,18 @@ The output format interleaves REPL evaluation blocks with final unified diffs, t
 
 ## Training Configuration
 
-Target: **Qwen3.6-Coder-27B** (BF16, ~54GB) on RunPod A100 80GB.
-
-| Parameter | Value |
-|-----------|-------|
-| LoRA rank | 64 |
-| LoRA alpha | 128 |
-| Target modules | All linear layers |
-| Learning rate | 3e-4 cosine schedule |
-| Batch size | 2–4 |
-| Gradient accumulation | → effective batch 16–32 |
-| Epochs | 3 |
-| Max context | 8K (expandable with gradient checkpointing) |
-| Training duration | 6–12 hours on A100 |
+Target: **Qwen3.8-27B** (BF16, ~54GB), LoRA on all linear layers with
+LLaMA-Factory from git main (the `qwen3_8` template). Hyperparameters, with the
+reasoning behind each, live in `configs/codeflow_lora_qwen.yaml`;
+`tests/unit/test_training_parity.py` checks that what LLaMA-Factory trains on
+is what Qwen's chat template serves.
 
 Inference runs locally on MLX (Apple Silicon).
 
 ## Requirements
 
 - Python 3.10+
-- PyTorch 2.0+, Transformers 4.36+, PEFT 0.18+
+- Training: LLaMA-Factory main, transformers 5.2.0–5.8.0 (not 5.6.0), peft 0.18.x
 - For cloud training: A100 80GB or H100 80GB (RunPod)
 - For local inference: Apple Silicon Mac with MLX
 

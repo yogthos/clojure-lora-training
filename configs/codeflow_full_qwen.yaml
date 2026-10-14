@@ -18,8 +18,9 @@
 #   FORCE_TORCHRUN=1 llamafactory-cli train configs/codeflow_full_qwen.yaml
 
 ### model
-model_name_or_path: Qwen/Qwen3.6-27B   # confirm transformers >=4.57.1 + qwen3_6 template
-trust_remote_code: true
+# Environment and architecture notes: see codeflow_lora_qwen.yaml (transformers
+# >=5.2.0 within LLaMA-Factory's cap, flash-linear-attention, causal-conv1d).
+model_name_or_path: Qwen/Qwen3.8-27B
 
 ### method
 stage: sft
@@ -33,9 +34,15 @@ deepspeed: examples/deepspeed/ds_z3_config.json
 ### dataset
 dataset: codeflow_train
 eval_dataset: codeflow_val
-template: qwen3_6             # confirm exact string in your LLaMA-Factory build
+template: qwen3_8
+enable_thinking: true         # explicit: responses without <think> would train an
+                              #   empty think block (see codeflow_lora_qwen.yaml)
+disable_shuffling: true       # train file is in curriculum order (easy -> hard,
+                              #   assembly/curriculum.py); keep it
 train_on_prompt: false
-cutoff_len: 16384             # well within Qwen3.6's ~256K native context
+cutoff_len: 16384             # matches the assembler's token filter
+neat_packing: false           # GatedDeltaNet state leaks across packed examples
+                              #   unless flash_attn is fa2 (see the LoRA config)
 preprocessing_num_workers: 8
 overwrite_cache: true
 
@@ -58,7 +65,7 @@ warmup_ratio: 0.1
 weight_decay: 0.0
 bf16: true
 max_grad_norm: 1.0
-flash_attn: auto                     # Qwen3.6 hybrid linear attention may not take FA2
+flash_attn: auto
 gradient_checkpointing: true         # mandatory at 27B; ~20-30% slower, big savings
 
 ### eval + early stopping (stop early — overfitting is the main risk here)
@@ -68,5 +75,5 @@ eval_steps: 25
 load_best_model_at_end: true
 metric_for_best_model: eval_loss
 greater_is_better: false
-# CLI/callback:  --early_stopping_patience 2   (tighter than LoRA — full FT
-#   overfits faster; consider also freezing embeddings + lowest layers)
+early_stopping_steps: 2              # tighter than LoRA — full FT overfits faster;
+                                     #   consider also freezing embeddings + lowest layers

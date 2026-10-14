@@ -8,32 +8,9 @@ from src.codeflow.synthetic.cluster import (
     embed_examples,
     select_coreset,
     select_by_feature_diversity,
-    _embed_text,
     _cosine_distance,
     _euclidean_distance,
 )
-
-
-class TestEmbedText:
-    def test_returns_fixed_dimension(self):
-        emb = _embed_text("test text", dim=768)
-        assert len(emb) == 768
-        assert isinstance(emb, np.ndarray)
-
-    def test_deterministic(self):
-        emb1 = _embed_text("same text")
-        emb2 = _embed_text("same text")
-        assert np.allclose(emb1, emb2)
-
-    def test_different_texts_different_embeddings(self):
-        emb1 = _embed_text("hello world")
-        emb2 = _embed_text("completely different content")
-        assert not np.allclose(emb1, emb2)
-
-    def test_normalized(self):
-        emb = _embed_text("test", dim=64)
-        norm = np.linalg.norm(emb)
-        assert abs(norm - 1.0) < 1e-6
 
 
 class TestDistance:
@@ -97,29 +74,38 @@ class TestKCenterGreedy:
         assert len(indices) == 3
 
 
+def _bag_of_chars(text):
+    v = np.zeros(64)
+    for c in text:
+        v[ord(c) % 64] += 1
+    return v / (np.linalg.norm(v) or 1)
+
+
 class TestEmbedExamples:
-    def test_requires_content_field(self):
+    def test_embeds_each_example(self):
         examples = [
             {"instruction": "task 1", "input": "code 1"},
             {"instruction": "task 2", "input": "code 2"},
         ]
-        embeddings = embed_examples(examples, embedding_dim=64)
-        assert embeddings.shape == (2, 64)
+        assert embed_examples(examples, _bag_of_chars, embedding_dim=64).shape == (2, 64)
 
     def test_empty_handled(self):
-        embeddings = embed_examples([], embedding_dim=64)
-        assert embeddings.shape == (0, 64)
+        assert embed_examples([], _bag_of_chars, embedding_dim=64).shape == (0, 64)
+
+    def test_requires_an_embedding_model(self):
+        with pytest.raises(ValueError):
+            embed_examples([{"instruction": "x"}], None)
 
 
 class TestSelectCoreset:
     def test_small_dataset_unchanged(self):
         examples = [{"instruction": f"task {i}", "input": "code"} for i in range(5)]
-        selected = select_coreset(examples, target_size=10)
+        selected = select_coreset(examples, _bag_of_chars, target_size=10)
         assert len(selected) == 5
 
     def test_large_dataset_reduced(self):
         examples = [{"instruction": f"task {i:04d}", "input": "code"} for i in range(100)]
-        selected = select_coreset(examples, target_size=20)
+        selected = select_coreset(examples, _bag_of_chars, target_size=20)
         assert len(selected) == 20
 
 
@@ -147,3 +133,43 @@ class TestSelectByFeatureDiversity:
         ]
         selected = select_by_feature_diversity(examples, target_size=2, seed=42)
         assert 1 <= len(selected) <= 2
+
+
+class TestFeatureDiversityNeverShrinks:
+    """Training-example dicts carry no 'features' key; selection used to
+    return [] and wipe the output whenever there were more than target."""
+
+    def test_examples_without_features_fill_to_target(self):
+        examples = [{"instruction": f"t{i}", "output": "o"} for i in range(10)]
+        selected = select_by_feature_diversity(examples, target_size=4, seed=1)
+        assert len(selected) == 4
+
+    def test_fewer_features_than_target_fills_to_target(self):
+        examples = [{"instruction": f"t{i}", "features": ["macros" if i % 2 else "atoms"]}
+                    for i in range(10)]
+        selected = select_by_feature_diversity(examples, target_size=6, seed=1)
+        assert len(selected) == 6
+        assert len({e["instruction"] for e in selected}) == 6
+        # Both features still covered.
+        assert {f for e in selected for f in e["features"]} == {"macros", "atoms"}
+
+    def test_custom_extractor(self):
+        feats = {f"t{i}": ["rare"] if i == 7 else [] for i in range(10)}
+        examples = [{"instruction": f"t{i}"} for i in range(10)]
+        selected = select_by_feature_diversity(
+            examples, extract_fn=lambda ex: feats[ex["instruction"]],
+            target_size=2, seed=3)
+        assert len(selected) == 2
+        assert any(e["instruction"] == "t7" for e in selected)
+
+    def test_dict_features_do_not_crash(self):
+        examples = [{"instruction": f"t{i}", "features": [{"name": f"f{i % 3}"}]}
+                    for i in range(6)]
+        selected = select_by_feature_diversity(examples, target_size=3, seed=1)
+        assert len(selected) == 3
+
+    def test_deterministic(self):
+        examples = [{"instruction": f"t{i}"} for i in range(20)]
+        a = select_by_feature_diversity(examples, target_size=5, seed=9)
+        b = select_by_feature_diversity(examples, target_size=5, seed=9)
+        assert a == b

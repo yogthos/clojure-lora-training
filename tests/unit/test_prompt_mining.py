@@ -79,3 +79,37 @@ class TestMinePrompts:
         llm = _FakeLLM({"user_prompt": "p", "project_context": "c"})
         records = [{"instruction": f"implement feature number {i}"} for i in range(20)]
         assert len(mine_prompts(records, llm, max_prompts=5)) == 5
+
+
+class TestLLMFailures:
+    def test_one_failed_call_skips_that_record_only(self):
+        from src.llm.provider import LLMError
+
+        class Flaky:
+            n = 0
+
+            def call(self, *a, **k):
+                self.n += 1
+                if self.n == 1:
+                    raise LLMError("DeepSeek API error: 503")
+                return json.dumps({"user_prompt": "p", "project_context": "c"})
+
+        records = [{"instruction": "add nested schema support"},
+                   {"instruction": "fix the broken retry loop"}]
+        assert len(mine_prompts(records, Flaky(), max_prompts=10)) == 1
+
+    def test_auth_error_stops_mining(self):
+        from src.llm.provider import LLMAuthError
+
+        class NoAuth:
+            def call(self, *a, **k):
+                raise LLMAuthError("401")
+
+        with pytest.raises(LLMAuthError):
+            mine_prompts([{"instruction": "add nested schema support"}], NoAuth())
+
+
+def test_mined_prompt_keeps_source_repo():
+    llm = _FakeLLM({"user_prompt": "please add nested schemas", "project_context": "lib"})
+    out = mine_prompts([{"instruction": "add support for nested schemas", "repo": "o__lib"}], llm)
+    assert out[0].source_repo == "o__lib"

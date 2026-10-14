@@ -32,7 +32,7 @@ try:
     MLX_AVAILABLE = True
 except ImportError:
     MLX_AVAILABLE = False
-    logger.warning("MLX not available. Install with: pip install mlx mlx-lm")
+    logger.debug("MLX not available; MLXGenerator will raise if used")
 
 
 class MLXGenerator:

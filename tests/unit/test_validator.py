@@ -15,6 +15,9 @@ from src.codeflow.assembly.validator import (
 )
 
 
+_THINK = "<think>\nThe handler should return a response map.\n</think>\n\n"
+
+
 class TestCheckClojureSyntax:
     def test_valid_forms_pass(self):
         code = "(defn foo [x] (+ x 1))\n(def bar {:key \"val\"})"
@@ -47,12 +50,25 @@ class TestCheckClojureSyntax:
         assert len(errors) == 0
 
 
+    def test_escaped_backslash_ends_string(self):
+        assert check_clojure_syntax('(str "\\\\" "x")') == []
+
+    def test_character_literals_are_not_brackets(self):
+        assert check_clojure_syntax(r'(= c \( ) (= d \") (= e \;)') == []
+
+    def test_mismatched_bracket_types(self):
+        assert check_clojure_syntax("(let [x 1) x]")
+
+    def test_unclosed_vector(self):
+        assert check_clojure_syntax("(defn f [x (inc x))")
+
+
 class TestCheckDiffStructure:
     def test_well_formed_diff_passes(self):
         diff = """diff --git a/src/core.clj b/src/core.clj
 --- a/src/core.clj
 +++ b/src/core.clj
-@@ -10,6 +10,8 @@
+@@ -10,3 +10,3 @@
  unchanged line
 -removed line
 +added line
@@ -64,14 +80,14 @@ class TestCheckDiffStructure:
         diff = """diff --git a/a.clj b/a.clj
 --- a/a.clj
 +++ b/a.clj
-@@ -1,3 +1,3 @@
+@@ -1,1 +1,1 @@
 -old
 +new
 
 diff --git a/b.clj b/b.clj
 --- a/b.clj
 +++ b/b.clj
-@@ -5,4 +5,4 @@
+@@ -5,1 +5,1 @@
 -old2
 +new2"""
         errors = check_diff_structure(diff)
@@ -131,14 +147,11 @@ class TestValidateExample:
         rec = {
             "instruction": "refactor the middleware to use comp",
             "output": (
-                ";; nREPL session:\n"
-                ";; eval: (require '[ring.middleware])\n"
-                ";; result: nil\n"
-                ";; apply:\n"
+                "<think>\nWrap the response as JSON in the middleware chain.\n</think>\n\n"
                 "diff --git a/src/handler.clj b/src/handler.clj\n"
                 "--- a/src/handler.clj\n"
                 "+++ b/src/handler.clj\n"
-                "@@ -10,6 +10,8 @@\n"
+                "@@ -10,3 +10,4 @@\n"
                 " (defn app [request]\n"
                 "-  (-> request\n"
                 "+  (-> request\n"
@@ -208,3 +221,135 @@ class TestValidateJSONLFile:
             summary = validate_jsonl_file(in_path, out_path)
             assert summary["total"] == 1
             assert out_path.exists()
+
+
+class TestStrictDiffGate:
+    """A corrupt diff makes a record invalid no matter how well it scores."""
+
+    GOOD = (
+        "diff --git a/src/app/core.clj b/src/app/core.clj\n"
+        "--- a/src/app/core.clj\n"
+        "+++ b/src/app/core.clj\n"
+        "@@ -1,2 +1,2 @@\n"
+        " (ns app.core)\n"
+        "-(defn handler [req] nil)\n"
+        "+(defn handler [req] {:status 200})\n"
+    )
+
+    def _ex(self, output):
+        return {
+            "instruction": "Fix the ring handler in app.core to return a 200 response map",
+            "input": "",
+            "output": output,
+        }
+
+    def test_good_diff_is_valid(self):
+        from src.codeflow.assembly.validator import validate_example
+        assert validate_example(self._ex(_THINK + self.GOOD)).is_valid
+
+    def test_bad_hunk_counts_are_invalid(self):
+        from src.codeflow.assembly.validator import validate_example
+        bad = self.GOOD.replace("@@ -1,2 +1,2 @@", "@@ -1,4 +1,4 @@")
+        vr = validate_example(self._ex(bad))
+        assert not vr.is_valid
+        assert vr.diff_errors
+
+    def test_workflow_without_apply_marker_is_invalid(self):
+        from src.codeflow.assembly.validator import validate_example
+        out = ";; eval: (+ 1 2)\n;; result: 3\n" + self.GOOD
+        assert not validate_example(self._ex(out)).is_valid
+
+    def test_minus_sign_alone_is_not_a_change(self):
+        from src.codeflow.assembly.validator import check_diff_structure
+        d = "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n x-y\n"
+        assert check_diff_structure(d)
+
+
+class TestValidateJsonlFiltering:
+    def test_invalid_records_are_removed_from_output(self, tmp_path):
+        from src.codeflow.assembly.validator import validate_jsonl_file
+        from src.shared import load_jsonl, write_jsonl
+        good = {
+            "instruction": "Fix the ring handler in app.core to return a 200 response map",
+            "input": "",
+            "output": _THINK + TestStrictDiffGate.GOOD,
+        }
+        bad = dict(good, output=TestStrictDiffGate.GOOD.replace("@@ -1,2 +1,2 @@", "@@ -1,9 +1,9 @@"))
+        src = tmp_path / "in.jsonl"
+        write_jsonl([good, bad, good], src)
+        out = tmp_path / "out.jsonl"
+        summary = validate_jsonl_file(src, tmp_path / "report.json", filtered_path=out)
+        assert summary["invalid"] == 1
+        assert len(load_jsonl(out)) == 2
+
+    def test_report_only_mode_writes_no_filtered_file(self, tmp_path):
+        from src.codeflow.assembly.validator import validate_jsonl_file
+        from src.shared import write_jsonl
+        src = tmp_path / "in.jsonl"
+        write_jsonl([{"instruction": "x", "output": "y"}], src)
+        validate_jsonl_file(src, tmp_path / "report.json")
+        assert not (tmp_path / "out.jsonl").exists()
+
+
+def _live_record(**over):
+    from src.codeflow.synthetic.jolt_eval import EvalResult
+    from src.codeflow.synthetic.live_trace import LiveTrace, Step
+    diff = ("diff --git a/src/sq.clj b/src/sq.clj\n--- /dev/null\n+++ b/src/sq.clj\n"
+            "@@ -0,0 +1,2 @@\n+(ns sq)\n+(defn square [x] (* x x))\n")
+    steps = [Step("Plan: define square, check it.", "(defn square [x] (* x x))",
+                  EvalResult(form="", value="#'user/square")),
+             Step("Check a value.", "(square 4)", EvalResult(form="", value="16"))]
+    rec = LiveTrace(request="add a square function to the math helpers", context="",
+                    steps=steps, final_thinking="Works; write it.", diff=diff).to_record()
+    rec.update(over)
+    return rec
+
+
+class TestMultiTurnValidation:
+    def test_live_trace_is_valid(self):
+        r = validate_example(_live_record())
+        assert r.is_valid, r.to_dict()
+
+    def test_eval_code_is_syntax_checked(self):
+        rec = _live_record()
+        call = rec["conversations"][1]
+        call["value"] = call["value"].replace("(* x x))", "(* x x)")
+        assert validate_example(rec).syntax_errors
+
+    def test_function_call_needs_reasoning(self):
+        rec = _live_record()
+        rec["conversations"][3]["value"] = rec["conversations"][3]["value"].split("</think>\n\n")[1]
+        r = validate_example(rec)
+        assert not r.is_valid and any("reasoning" in e for e in r.format_errors)
+
+    def test_function_call_must_be_an_eval_call(self):
+        rec = _live_record()
+        rec["conversations"][1]["value"] = "<think>\nx\n</think>\n\n{\"name\": \"shell\"}"
+        assert not validate_example(rec).is_valid
+
+    def test_turn_order(self):
+        rec = _live_record()
+        conv = rec["conversations"]
+        conv[1], conv[2] = conv[2], conv[1]
+        r = validate_example(rec)
+        assert not r.is_valid and r.format_errors
+
+    def test_final_turn_applies_a_diff(self):
+        rec = _live_record()
+        final = rec["conversations"][-1]
+        final["value"] = final["value"].replace(";; apply:\n", "")
+        rec["output"] = final["value"]
+        assert not validate_example(rec).is_valid
+
+
+class TestTransitionReasoning:
+    _DIFF = ("diff --git a/src/core.clj b/src/core.clj\n--- a/src/core.clj\n+++ b/src/core.clj\n"
+             "@@ -1,2 +1,2 @@\n (ns core)\n-(defn parse [x] x)\n+(defn parse [x] (when x x))\n")
+
+    def test_transition_with_reasoning_is_valid(self):
+        out = "<think>\nparse must tolerate nil input.\n</think>\n\n" + self._DIFF
+        assert validate_example({"instruction": "handle nil in parse fn", "output": out}).is_valid
+
+    def test_transition_without_reasoning_is_invalid(self):
+        r = validate_example({"instruction": "handle nil in parse fn", "output": self._DIFF})
+        assert not r.is_valid and any("reasoning" in e for e in r.format_errors)

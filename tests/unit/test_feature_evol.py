@@ -24,7 +24,7 @@ class _FakeLLM:
         self._payload = json.dumps(payload)
 
     def call(self, system_prompt, user_prompt, temperature=None,
-             max_tokens=None, require_json=False):
+             max_tokens=None, require_json=False, reject_truncated=False):
         return self._payload
 
 
@@ -169,3 +169,95 @@ class TestSampleFeatureNames:
         # min_depth=2 should yield nothing since features are at depth 1
         names = sample_feature_names(tree, count=10, min_depth=2)
         assert len(names) == 0
+
+
+import json as _json
+
+from src.codeflow.synthetic.construct_tree import FeatureTreeNode
+from src.codeflow.synthetic.prompts import BREADTH_SYSTEM, DEPTH_SYSTEM, DETAIL_SYSTEM
+
+
+class _RecordingLLM:
+    """Returns a fixed object reply and records which prompts it was sent."""
+
+    def __init__(self, payload=None, exc=None):
+        self.payload, self.exc = payload, exc
+        self.prompts = []
+
+    def call(self, system_prompt, user_prompt, **kw):
+        self.prompts.append(user_prompt)
+        if self.exc:
+            raise self.exc
+        return _json.dumps(self.payload)
+
+
+class TestEvolutionShapes:
+    """Prompts and parsing must agree on one reply shape per evolution type."""
+
+    def test_breadth_object_reply_adds_root_with_children(self):
+        tree = build_baseline_tree()
+        llm = _RecordingLLM({"categories": [
+            {"name": "observability", "description": "logging and metrics",
+             "subcategories": [{"name": "structured-logging", "description": "maps as logs"}]},
+        ]})
+        evolved = evolve_breadth(tree, llm, EvolConfig())
+        assert evolved.nodes["observability"].children == ["observability/structured-logging"]
+        assert evolved.nodes["observability/structured-logging"].depth == 1
+
+    def test_breadth_prompt_asks_for_categories_with_subcategories(self):
+        assert '"categories"' in BREADTH_SYSTEM
+        assert '"subcategories"' in BREADTH_SYSTEM
+        assert "parent_features" not in BREADTH_SYSTEM
+
+    def test_depth_prompt_asks_for_subcategories_object(self):
+        assert '"subcategories"' in DEPTH_SYSTEM
+        assert "JSON array" not in DEPTH_SYSTEM
+
+    def test_detail_object_reply_adds_named_features(self):
+        tree = build_baseline_tree()
+        for name, node in tree.nodes.items():
+            if node.depth > 0:
+                node.features = [{"name": f"x{i}"} for i in range(5)]  # not sparse
+        target = tree.nodes["metaprogramming/macros"]
+        target.features = []
+        llm = _RecordingLLM({"features": [
+            {"feature_type": "macros", "name": "with-retry", "description": "retry macro"},
+            {"description": "nameless"},
+        ]})
+        evolve_detail(tree, llm, EvolConfig())
+        assert [f["name"] for f in target.features] == ["with-retry"]
+
+    def test_detail_prompt_asks_for_features_not_namespace_spec(self):
+        assert '"features"' in DETAIL_SYSTEM
+        assert '"namespace"' not in DETAIL_SYSTEM
+
+
+class TestDepthCoversEvolvedRoots:
+    """evolve_depth only ever looked at root_nodes[:5] — always baseline roots."""
+
+    def test_evolved_root_without_children_gets_subcategories(self):
+        tree = build_baseline_tree()
+        tree.nodes["observability"] = FeatureTreeNode(
+            name="observability", label="Observability", depth=0)
+        tree.root_count += 1
+        llm = _RecordingLLM({"subcategories": [{"name": "tracing", "description": "spans"}]})
+        evolved = evolve_depth(tree, llm, EvolConfig())
+        assert "observability/tracing" in evolved.nodes
+        assert evolved.nodes["observability"].children == ["observability/tracing"]
+
+
+class TestEvolutionLLMFailures:
+    @pytest.mark.parametrize("fn", [evolve_breadth, evolve_depth, evolve_detail])
+    def test_auth_error_propagates(self, fn):
+        from src.llm.provider import LLMAuthError
+        with pytest.raises(LLMAuthError):
+            fn(build_baseline_tree(), _RecordingLLM(exc=LLMAuthError("401")), EvolConfig())
+
+    @pytest.mark.parametrize("fn", [evolve_breadth, evolve_depth, evolve_detail])
+    def test_llm_error_leaves_tree_unchanged(self, fn):
+        from src.llm.provider import LLMError
+        tree = build_baseline_tree()
+        before = len(tree.nodes)
+        out = fn(tree, _RecordingLLM(exc=LLMError("503")), EvolConfig())
+        assert len(out.nodes) == before
+        assert sum(len(n.features) for n in out.nodes.values()) == 0

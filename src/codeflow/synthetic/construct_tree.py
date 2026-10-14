@@ -13,11 +13,14 @@ The tree is used for:
 """
 
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple
 from collections import defaultdict
 
-from ...llm.provider import LLMProvider
+from ...llm.provider import LLMAuthError, LLMError, LLMProvider
+from .llm_json import parse_json_list
+from .prompts import CONSTRUCT_TREE_SYSTEM as _CONSTRUCT_TREE_SYSTEM
 
 
 # Top-level Clojure feature taxonomy categories
@@ -228,18 +231,7 @@ def assign_features_to_tree(
     }
 
     for feat in features:
-        ftype = feat.get("feature_type", "").lower().strip()
-        category = _ROUTING.get(ftype)
-
-        if category is None:
-            # Try partial matches
-            for key, cat in _ROUTING.items():
-                if key in ftype or ftype in key:
-                    category = cat
-                    break
-
-        if category is None:
-            category = "data-transformation"  # default bucket
+        category = _route_category(feat, _ROUTING)
 
         # Find the best subcategory node
         sub_node = _best_subcategory(category, feat, tree)
@@ -247,6 +239,37 @@ def assign_features_to_tree(
             tree.nodes[sub_node].features.append(feat)
 
     return tree
+
+
+def _norm(text: str) -> str:
+    """Lowercase with hyphens as spaces, so slugs and labels compare equal."""
+    return text.lower().replace("-", " ").strip()
+
+
+def _route_category(feat: dict, routing: Dict[str, str]) -> str:
+    """Pick the root category for a feature.
+
+    Routes on feature_type first. An empty type must not take part in
+    substring matching ('"" in key' is true for every key, which sent every
+    untyped feature to the first entry, metaprogramming); untyped or
+    unrecognised features are routed by a routing keyword in their name or
+    description, then fall back to the default bucket.
+    """
+    ftype = feat.get("feature_type", "").lower().strip()
+    if ftype:
+        if ftype in routing:
+            return routing[ftype]
+        # Try partial matches
+        for key, cat in routing.items():
+            if key in ftype or ftype in key:
+                return cat
+
+    text = _norm(f"{feat.get('name', '')} {feat.get('description', '')}")
+    for key, cat in routing.items():
+        if re.search(rf"\b{re.escape(_norm(key))}\b", text):
+            return cat
+
+    return "data-transformation"  # default bucket
 
 
 def _best_subcategory(
@@ -263,22 +286,25 @@ def _best_subcategory(
     if not cat_node.children:
         return category
 
-    ftype = feat.get("feature_type", "").lower()
-    desc = feat.get("description", "").lower()
-    name = feat.get("name", "").lower()
+    ftype = _norm(feat.get("feature_type", ""))
+    desc = _norm(feat.get("description", ""))
+    name = _norm(feat.get("name", ""))
 
     scored = []
     for child_name in cat_node.children:
         child = tree.nodes.get(child_name)
         if child is None:
             continue
-        child_label = child.label.lower()
+        child_label = _norm(child.label)
         score = 0
-        # Exact match on feature_type
-        if child_label in ftype or ftype in child_label:
+        # Match on feature_type (never on an empty one, which is a substring
+        # of every label)
+        if ftype and (child_label in ftype or ftype in child_label):
             score += 3
         # Match in description
-        if any(w in desc for w in child_label.split()):
+        if child_label in desc:
+            score += 2
+        elif any(w in desc for w in child_label.split()):
             score += 1
         # Match in name
         if child_label in name:
@@ -302,45 +328,42 @@ def build_tree_with_llm(
     """
     tree = build_baseline_tree()
 
-    _SYSTEM = """You are a Clojure code taxonomy expert. Given a list of extracted
-Clojure code features, classify each one into a hierarchical taxonomy.
-
-Categories: metaprogramming, polymorphism, concurrency, data-transformation,
-interop, web-http, data-storage, repl-development, testing, error-handling,
-configuration, data-structures.
-
-For each feature, output:
-{"feature_index": N, "category": "...", "subcategory_hint": "..."}
-
-Output JSON array only, no markdown."""
-
     features_json = json.dumps(features, indent=2)
     prompt = f"Classify these Clojure features:\n\n{features_json}"
 
     try:
         result = llm.call(
-            system_prompt=_SYSTEM,
+            system_prompt=_CONSTRUCT_TREE_SYSTEM,
             user_prompt=prompt,
             temperature=0.1,
             max_tokens=4096,
             require_json=True,
+            reject_truncated=True,
         )
-        classifications = json.loads(result) if isinstance(result, str) else result
-        if isinstance(classifications, dict):
-            classifications = [classifications]
-
-        for cls in classifications:
-            idx = cls.get("feature_index", -1)
-            cat = cls.get("category", "")
-            if 0 <= idx < len(features):
-                sub_node = _best_subcategory(cat, features[idx], tree)
-                if sub_node:
-                    tree.nodes[sub_node].features.append(features[idx])
-    except Exception:
+        classifications = parse_json_list(result, "classifications")
+    except LLMAuthError:
+        raise
+    except (LLMError, ValueError):
         # Fall back to keyword routing
-        tree = assign_features_to_tree(features, tree)
+        return assign_features_to_tree(features, tree)
 
-    return tree
+    placed = set()
+    for cls in classifications:
+        try:
+            idx = int(cls.get("feature_index", -1))
+        except (TypeError, ValueError):
+            continue
+        if not 0 <= idx < len(features) or idx in placed:
+            continue
+        sub_node = _best_subcategory(str(cls.get("category", "")), features[idx], tree)
+        if sub_node:
+            tree.nodes[sub_node].features.append(features[idx])
+            placed.add(idx)
+
+    # Features the model skipped or put in an unknown category are routed by
+    # keyword rather than dropped.
+    leftover = [f for i, f in enumerate(features) if i not in placed]
+    return assign_features_to_tree(leftover, tree)
 
 
 def get_tree_statistics(tree: FeatureTree) -> dict:

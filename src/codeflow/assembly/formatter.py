@@ -22,7 +22,9 @@ DEFAULT_SYSTEM_PROMPT = (
 )
 
 # Standard field order for LLaMA-Factory
-_FIELD_ORDER = ("instruction", "input", "output", "system", "history")
+# ``repo`` isn't a training column (dataset_info maps only the others); it
+# carries the source repository to the grouped train/val split.
+_FIELD_ORDER = ("instruction", "input", "output", "system", "history", "repo")
 
 # Fields recognized as part of the LLaMA-Factory format
 _VALID_FIELDS = set(_FIELD_ORDER)
@@ -36,7 +38,7 @@ def format_record(record: dict) -> dict:
     - All field values are strings (except history, which is a list)
     - System prompt defaults to the nREPL-development prompt
     - History defaults to empty list
-    - Unrecognized fields are stripped
+    - Unrecognized fields are stripped (repo is kept for the grouped split)
     - Fields are in standard order
     """
     result = {}
@@ -64,10 +66,21 @@ def format_record(record: dict) -> dict:
     else:
         result["history"] = []
 
+    result["repo"] = _to_string(record.get("repo", ""))
+    # Multi-turn traces carry their turns and tool schema to the final
+    # sharegpt write (see sharegpt.py).
+    multi_turn = bool(record.get("conversations"))
+    if multi_turn:
+        result["conversations"] = record["conversations"]
+        result["tools"] = _to_string(record.get("tools", ""))
+
     # Reorder to standard field order
     ordered = {}
     for field in _FIELD_ORDER:
         ordered[field] = result[field]
+    if multi_turn:
+        ordered["conversations"] = result["conversations"]
+        ordered["tools"] = result["tools"]
 
     return ordered
 

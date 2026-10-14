@@ -6,8 +6,11 @@ Validates Code Flow training examples and produces validation reports.
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
+from ..clj_text import bracket_errors
+from ..diffs import apply_section_errors, check_patch, extract_diff, split_lines
+from ...shared import write_jsonl
 from .assembler import load_jsonl
 
 # ── Clojure-specific terms for relevance scoring ────────────────────────
@@ -35,6 +38,7 @@ class ValidationResult:
     total_score: float = 0.0
     syntax_errors: List[str] = field(default_factory=list)
     diff_errors: List[str] = field(default_factory=list)
+    format_errors: List[str] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
     instruction_score: float = 0.0
     syntax_score: float = 0.0
@@ -49,6 +53,7 @@ class ValidationResult:
             "diff_score": self.diff_score,
             "syntax_errors": self.syntax_errors,
             "diff_errors": self.diff_errors,
+            "format_errors": self.format_errors,
             "warnings": self.warnings,
         }
 
@@ -56,107 +61,39 @@ class ValidationResult:
 # ── Clojure syntax check ─────────────────────────────────────────────────
 
 def check_clojure_syntax(code: str) -> List[str]:
-    """Check basic Clojure syntax validity.
+    """Check that brackets in Clojure code pair up and strings are closed.
 
-    Checks for balanced parentheses and basic form structure.
-    Does NOT do full parsing — just checks that parens balance
-    and common structural issues are caught.
+    Not a full parse: strings, character literals and comments are skipped,
+    and ``()``, ``[]`` and ``{}`` must nest correctly.
 
     Returns list of error messages (empty = valid).
     """
-    errors = []
-
-    depth = 0
-    in_string = False
-    in_comment = False
-    prev_char = ""
-    for i, ch in enumerate(code):
-        # End of line resets comment state
-        if ch == '\n':
-            in_comment = False
-            prev_char = ch
-            continue
-
-        # Track strings
-        if ch == '"' and prev_char != '\\':
-            in_string = not in_string
-
-        if in_string:
-            prev_char = ch
-            continue
-
-        if in_comment:
-            prev_char = ch
-            continue
-
-        # Start of a line comment
-        if ch == ';':
-            in_comment = True
-            prev_char = ch
-            continue
-
-        if ch == '(':
-            depth += 1
-        elif ch == ')':
-            depth -= 1
-            if depth < 0:
-                # Try to give a useful line number
-                line_num = code[:i].count('\n') + 1
-                errors.append(f"Unmatched closing parenthesis at line {line_num}")
-                depth = 0
-
-        prev_char = ch
-
-    if depth > 0:
-        errors.append(f"Unmatched opening parenthesis: {depth} unclosed")
-    elif depth < 0:
-        errors.append(f"Unmatched closing parenthesis: {-depth} extra")
-
-    return errors
+    return bracket_errors(code)
 
 
 # ── Diff structure check ─────────────────────────────────────────────────
 
 def check_diff_structure(diff: str) -> List[str]:
-    """Validate unified diff structure.
+    """Validate that the output's diff is a patch ``git apply`` accepts.
 
-    Checks for:
-    - At least one diff --git header
-    - Corresponding @@ hunk headers
-    - Lines with +/- prefixes indicating actual changes
-    - Basic file path format
+    ``diff`` may be a whole output (REPL trace + ``;; apply:`` + diff); only the
+    part from the first ``diff --git`` header is checked. Hunk counts must match
+    their bodies and at least one line must actually change.
     """
-    errors = []
-
     if not diff.strip():
-        errors.append("Empty diff")
-        return errors
+        return ["Empty diff"]
 
-    has_header = "diff --git" in diff
-    has_hunk = "@@" in diff
-    has_old = "-" in diff
-    has_new = "+" in diff
+    patch = extract_diff(diff)
+    if not patch:
+        return ["Missing diff --git header"]
 
-    if not has_header:
-        errors.append("Missing diff --git header")
+    errors = []
+    problem = check_patch(patch)
+    if problem:
+        errors.append(f"Corrupt patch: {problem}")
 
-    if not has_hunk:
-        errors.append("Missing hunk header (@@ -line,count +line,count @@)")
-
-    if not (has_old or has_new):
-        errors.append("No changed lines found (+/- lines)")
-
-    # Check hunk header format for each hunk
-    for i, line in enumerate(diff.splitlines()):
-        if line.startswith("@@"):
-            # Validate: @@ -digits[,digits] +digits[,digits] @@
-            import re
-            if not re.match(r'^@@\s+-\d+(?:,\d+)?\s+\+\d+(?:,\d+)?\s+@@', line):
-                errors.append(f"Malformed hunk header at line {i + 1}: {line[:60]}")
-
-    # Verify there's at least one meaningful change (not just context)
     changed_lines = [
-        l for l in diff.splitlines()
+        l for l in patch.splitlines()
         if (l.startswith("+") and not l.startswith("+++"))
         or (l.startswith("-") and not l.startswith("---"))
     ]
@@ -219,6 +156,83 @@ def score_relevance(instruction: str) -> float:
     return min(score, 1.0)
 
 
+# ── Turn structure ───────────────────────────────────────────────────────
+
+_THINK_OPEN, _THINK_CLOSE = "<think>\n", "\n</think>\n\n"
+
+
+def split_think(text: str) -> Optional[Tuple[str, str]]:
+    """(reasoning, content) of an assistant turn that opens with a closed,
+    non-empty ``<think>`` block, else None."""
+    if not text.startswith(_THINK_OPEN) or _THINK_CLOSE not in text:
+        return None
+    reasoning, content = text[len(_THINK_OPEN):].split(_THINK_CLOSE, 1)
+    return (reasoning, content) if reasoning.strip() else None
+
+
+def _eval_code(content: str) -> Optional[str]:
+    """The code of an ``eval`` tool call, or None if it isn't one."""
+    try:
+        call = json.loads(content)
+    except ValueError:
+        return None
+    if not isinstance(call, dict) or call.get("name") != "eval":
+        return None
+    code = (call.get("arguments") or {}).get("code")
+    return code if isinstance(code, str) and code.strip() else None
+
+
+def _chain_errors(conv: List[dict]) -> List[str]:
+    """Errors in a history chain: (human, gpt) turns, each gpt turn reasoning
+    followed by a diff that applies."""
+    errors: List[str] = []
+    for n, turn in enumerate(conv):
+        if n % 2 == 0:
+            continue
+        parts = split_think(turn.get("value", ""))
+        if parts is None:
+            errors.append(f"assistant turn {n} has no reasoning (<think>...</think>)")
+            continue
+        errors.extend(f"turn {n}: {e}" for e in check_diff_structure(parts[1]))
+    return errors
+
+
+def _is_chain(conv: List[dict]) -> bool:
+    roles = [t.get("from") for t in conv]
+    return len(roles) >= 4 and roles == ["human", "gpt"] * (len(roles) // 2)
+
+
+def _conversation_errors(conv: List[dict]) -> Tuple[List[str], List[str]]:
+    """(format errors, eval code) for a multi-turn record.
+
+    Order: human, then (function_call, observation) pairs, then a final gpt
+    turn that applies a diff. Every assistant turn opens with reasoning.
+    """
+    errors: List[str] = []
+    codes: List[str] = []
+    roles = [t.get("from") for t in conv]
+    pairs_ok = all(roles[i:i + 2] == ["function_call", "observation"] for i in range(1, len(roles) - 1, 2))
+    if len(roles) < 4 or roles[0] != "human" or roles[-1] != "gpt" or len(roles) % 2 or not pairs_ok:
+        errors.append(f"turns are not human, (function_call, observation)*, gpt: {roles}")
+        return errors, codes
+    for n, turn in enumerate(conv[1:], 1):
+        if turn["from"] == "observation":
+            continue
+        parts = split_think(turn.get("value", ""))
+        if parts is None:
+            errors.append(f"assistant turn {n} has no reasoning (<think>...</think>)")
+            continue
+        if turn["from"] == "function_call":
+            code = _eval_code(parts[1])
+            if code is None:
+                errors.append(f"turn {n} is not an eval tool call")
+            else:
+                codes.append(code)
+        elif not parts[1].startswith(";; apply:\n"):
+            errors.append("final turn does not start with ';; apply:'")
+    return errors, codes
+
+
 # ── Full example validation ──────────────────────────────────────────────
 
 def validate_example(example: dict, min_score: float = 0.4) -> ValidationResult:
@@ -250,8 +264,18 @@ def validate_example(example: dict, min_score: float = 0.4) -> ValidationResult:
         if result.instruction_score < 0.2:
             result.warnings.append(f"low instruction relevance: {result.instruction_score:.2f}")
 
-    # Clojure syntax — check code blocks in output
-    code_blocks = _extract_code_blocks(output)
+    conv = example.get("conversations")
+    chain = bool(conv) and _is_chain(conv)
+    if chain:
+        result.format_errors, code_blocks = _chain_errors(conv), []
+    elif conv:
+        result.format_errors, code_blocks = _conversation_errors(conv)
+    else:
+        code_blocks = _extract_code_blocks(output)
+        if split_think(output) is None:
+            result.format_errors.append("output has no reasoning (<think>...</think>)")
+
+    # Clojure syntax in the evaluated code
     if code_blocks:
         all_syntax_ok = True
         for code in code_blocks:
@@ -264,7 +288,7 @@ def validate_example(example: dict, min_score: float = 0.4) -> ValidationResult:
         result.syntax_score = 0.5  # No code blocks to check, not a failure
 
     # Diff structure check
-    diff_errors = check_diff_structure(output)
+    diff_errors = check_diff_structure(output) + apply_section_errors(output)
     if diff_errors:
         result.diff_errors.extend(diff_errors)
         result.diff_score = 0.0
@@ -279,32 +303,20 @@ def validate_example(example: dict, min_score: float = 0.4) -> ValidationResult:
     )
     result.total_score = round(result.total_score, 2)
 
-    result.is_valid = result.total_score >= min_score
+    # A corrupt patch is unusable training data whatever else scores well.
+    result.is_valid = (result.total_score >= min_score and not result.diff_errors
+                       and not result.format_errors)
     return result
 
 
 def _extract_code_blocks(text: str) -> List[str]:
-    """Extract Clojure code blocks from text.
+    """Clojure code in ```clojure fenced blocks of a single-turn output.
+    (Multi-turn traces carry their code in eval tool calls.)"""
+    blocks: List[str] = []
 
-    Looks for:
-    - ;; eval: <form> patterns
-    - ```clojure ``` blocks
-    - Lines that look like top-level Clojure forms
-    """
-    blocks = []
-
-    # Extract ;; eval: forms
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped.startswith(";; eval:"):
-            form = stripped[len(";; eval:"):].strip()
-            if form:
-                blocks.append(form)
-
-    # Extract ```clojure blocks
     in_clj_block = False
-    clj_lines = []
-    for line in text.splitlines():
+    clj_lines: List[str] = []
+    for line in split_lines(text):
         if line.strip().startswith("```clojure"):
             in_clj_block = True
             clj_lines = []
@@ -323,13 +335,16 @@ def _extract_code_blocks(text: str) -> List[str]:
 # ── Batch validation ─────────────────────────────────────────────────────
 
 def validate_jsonl_file(input_path: Path, output_path: Path,
-                        min_score: float = 0.4) -> dict:
+                        min_score: float = 0.4,
+                        filtered_path: Optional[Path] = None) -> dict:
     """Validate all examples in a JSONL file and write a report.
 
     Args:
         input_path: Path to JSONL file to validate.
         output_path: Path to write JSON validation report.
         min_score: Minimum score to consider valid.
+        filtered_path: If given, write only the valid records here (may be
+            input_path itself, to drop invalid records in place).
 
     Returns:
         Summary dict with total, valid, invalid counts and scores.
@@ -337,7 +352,7 @@ def validate_jsonl_file(input_path: Path, output_path: Path,
     records = load_jsonl(input_path)
 
     results = []
-    valid_count = 0
+    kept = []
     scores = []
 
     for i, rec in enumerate(records):
@@ -346,7 +361,10 @@ def validate_jsonl_file(input_path: Path, output_path: Path,
         results.append(entry)
         scores.append(vr.total_score)
         if vr.is_valid:
-            valid_count += 1
+            kept.append(rec)
+    valid_count = len(kept)
+    if filtered_path is not None:
+        write_jsonl(kept, filtered_path)
 
     summary = {
         "total": len(records),

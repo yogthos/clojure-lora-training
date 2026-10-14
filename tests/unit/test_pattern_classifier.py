@@ -163,3 +163,41 @@ class TestMultiplePatterns:
         assert result.is_protocol_change
         assert result.is_spec_change
         assert len(result.patterns_found) >= 2
+
+
+class TestTokenMatching:
+    """Forms match as whole Clojure tokens on changed lines, not substrings."""
+
+    def test_substrings_do_not_match(self):
+        diff = "-(def change 1)\n+(def change 2)\n+(defn good-subset [x] (tapir x))"
+        r = classify_diff(diff, ["src/core.clj"])
+        assert not r.is_async_change
+
+    def test_hunk_header_is_not_deref(self):
+        diff = "@@ -1,2 +1,2 @@\n-(defn ref-count [x] 1)\n+(defn ref-count [x] 2)"
+        r = classify_diff(diff, ["src/core.clj"])
+        assert not r.is_state_machine
+
+    def test_context_lines_are_ignored(self):
+        diff = " (defmacro unless [c & body] `(if ~c nil (do ~@body)))\n-(def x 1)\n+(def x 2)"
+        r = classify_diff(diff, ["src/core.clj"])
+        assert not r.is_macro_change
+
+    def test_strings_and_comments_are_ignored(self):
+        diff = '+(defn greet "go to the `chan` page" [] 1) ; tap here'
+        r = classify_diff(diff, ["src/core.clj"])
+        assert not r.is_async_change
+        assert not r.is_macro_change
+
+    def test_alias_qualified_async_forms_match(self):
+        diff = "+(a/go (a/<! c))"
+        assert classify_diff(diff, ["src/core.clj"]).is_async_change
+
+    def test_syntax_quote_template_is_macro(self):
+        diff = "+(defn- emit [c] `(if ~c :yes :no))"
+        assert classify_diff(diff, ["src/core.clj"]).is_macro_change
+
+    def test_deref_counts_for_state(self):
+        diff = "+(reset! state (inc @state))"
+        assert classify_diff(diff, ["src/core.clj"]).is_state_machine
+

@@ -51,9 +51,25 @@ class TestFilterTrivialDiffs:
                  "source": "synthetic"}]
         assert filter_trivial_diffs(recs, min_changed_lines=4) == recs
 
+    def test_chain_is_judged_on_all_its_turns(self):
+        conv = [{"from": "human", "value": "a"}, {"from": "gpt", "value": _diff(1, 0)},
+                {"from": "human", "value": "b"}, {"from": "gpt", "value": _diff(3, 2)}]
+        recs = [{"instruction": "chain", "output": _diff(1, 0), "conversations": conv,
+                 "source": "git"}]
+        assert filter_trivial_diffs(recs, min_changed_lines=4) == recs
+        tiny = [dict(recs[0], conversations=conv[:2] + conv[:2])]
+        assert filter_trivial_diffs(tiny, min_changed_lines=4) == []
+
     def test_non_diff_git_record_is_kept(self):
         recs = [{"instruction": "x", "output": "no diff here", "source": "git"}]
         assert filter_trivial_diffs(recs, min_changed_lines=4) == recs
+
+
+def _live(instruction, output):
+    """A synthetic multi-turn trace record (only those survive assembly)."""
+    return {"instruction": instruction, "output": output, "tools": "[]",
+            "conversations": [{"from": "human", "value": instruction},
+                              {"from": "gpt", "value": output}]}
 
 
 def _write_jsonl(path: Path, records: list[dict]) -> None:
@@ -90,12 +106,21 @@ class TestLoadJSONL:
             result = load_jsonl(dir_path)
             assert len(result) == 2
 
-    def test_skips_malformed_lines(self):
+    def test_malformed_line_is_an_error(self):
+        # A corrupt record in the middle is data loss, not something to skip.
+        import pytest
         with TemporaryDirectory() as d:
             p = Path(d) / "test.jsonl"
             p.write_text('{"valid": 1}\nnot json\n{"also": 2}\n')
-            result = load_jsonl(p)
-            assert len(result) == 2
+            with pytest.raises(ValueError, match="test.jsonl:2"):
+                load_jsonl(p)
+
+    def test_torn_final_line_is_skipped(self):
+        # An interrupted append leaves an unterminated last line.
+        with TemporaryDirectory() as d:
+            p = Path(d) / "test.jsonl"
+            p.write_text('{"valid": 1}\n{"also": 2}\n{"to')
+            assert load_jsonl(p) == [{"valid": 1}, {"also": 2}]
 
 
 class TestComputeDedupKey:
@@ -132,9 +157,27 @@ class TestClassifyExample:
         ex = {"instruction": "optimize the transducer pipeline with lazy-seq"}
         assert classify_example(ex) == "optimize"
 
-    def test_uses_output_fallback(self):
-        ex = {"instruction": "update things", "output": ";; fix: handle edge case"}
-        assert classify_example(ex) == "bug-fix"
+    def test_ignores_code_in_output_and_input(self):
+        # Code is full of words like "add", "test" and "error"; the change type
+        # is what was asked for.
+        ex = {"instruction": "rename the config loader",
+              "input": "(defn add-error-handler [])", "output": "+(deftest add-test)"}
+        assert classify_example(ex) == "refactor"
+
+    @pytest.mark.parametrize("instruction", [
+        "update the prefix of the address field",   # fix in prefix, add in address
+        "handle the latest dependency",              # test in latest
+    ])
+    def test_keywords_match_whole_words(self, instruction):
+        assert classify_example({"instruction": instruction}) == "refactor"
+
+    @pytest.mark.parametrize("instruction,kind", [
+        ("fixes the retry loop", "bug-fix"),
+        ("added streaming support", "add-feature"),
+        ("adding tests for the parser", "test"),
+    ])
+    def test_inflections_match(self, instruction, kind):
+        assert classify_example({"instruction": instruction}) == kind
 
     def test_unknown_defaults_to_refactor(self):
         ex = {"instruction": "do something vague"}
@@ -182,10 +225,12 @@ class TestBalanceByType:
         result = balance_by_type(recs, max_per_type=100)
         assert len(result) == 3
 
-    def test_uses_default_max_when_none(self):
-        recs = [{"instruction": f"fix {i}", "output": "d"} for i in range(100)]
-        result = balance_by_type(recs)
-        assert len(result) == len(recs)  # default max computed from smallest type
+    def test_none_means_no_cap(self):
+        # Capping every type at the smallest one by default silently threw away
+        # most of the data.
+        recs = ([{"instruction": f"fix bug {i}", "output": "d"} for i in range(100)]
+                + [{"instruction": f"refactor {i}", "output": "d"} for i in range(2)])
+        assert len(balance_by_type(recs)) == 102
 
 
 class TestFilterByLength:
@@ -280,7 +325,7 @@ class TestAssembleDataset:
                 {"instruction": "fix null bug", "output": "diff-g"},
             ])
             _write_jsonl(synth_dir / "s.jsonl", [
-                {"instruction": "add feature endpoint", "output": "diff-s"},
+                _live("add feature endpoint", "diff-s"),
             ])
             result = assemble_dataset(
                 git_paths=[git_dir], synth_paths=[synth_dir],
@@ -336,12 +381,12 @@ class TestAssembleDataset:
 
             # 100 git bug-fix records (one dominant change type).
             _write_jsonl(git_dir / "g.jsonl", [
-                {"instruction": f"fix bug {i}", "output": "diff"}
+                {"instruction": f"fix bug {i}", "output": f"diff {i}"}
                 for i in range(100)
             ])
             # 30 synthetic records that also classify as bug-fix.
             _write_jsonl(synth_dir / "s.jsonl", [
-                {"instruction": f"resolve crash {i}", "output": "diff"}
+                _live(f"resolve crash {i}", f"patch {i}")
                 for i in range(30)
             ])
 
@@ -364,11 +409,11 @@ class TestAssembleDataset:
             git_dir.mkdir()
             synth_dir.mkdir()
             _write_jsonl(git_dir / "g.jsonl", [
-                {"instruction": f"add feature {i}", "output": "diff"}
+                {"instruction": f"add feature {i}", "output": f"diff {i}"}
                 for i in range(60)
             ])
             _write_jsonl(synth_dir / "s.jsonl", [
-                {"instruction": f"build thing {i}", "output": ";; Goal: x"}
+                _live(f"build thing {i}", f";; Goal: x{i}")
                 for i in range(60)
             ])
             result = assemble_dataset(
@@ -383,3 +428,35 @@ class TestAssembleDataset:
             # ...and more than one variant is actually used (no attention collapse).
             assert len({r["system"] for r in git}) > 1
             assert len({r["system"] for r in synth}) > 1
+
+
+_BAD_COUNTS = (";; eval: (+ 1 2)\n;; result: 3\n;; apply:\n"
+               "diff --git a/f.clj b/f.clj\n--- a/f.clj\n+++ b/f.clj\n"
+               "@@ -1,5 +1,9 @@\n (ns f)\n-(def a 1)\n+(def a 2)\n")
+
+
+def test_multi_message_ties_prefer_bug_fix():
+    ex = {"instruction": "Remove unneeded expiry test; Fix admin logic; Refactor for readability"}
+    assert classify_example(ex) == "bug-fix"
+
+
+def test_one_shot_synthetic_traces_are_dropped(tmp_path):
+    # Their ;; result: lines sit in the loss as text the model would learn to
+    # write; only live multi-turn traces are kept.
+    git, synth = tmp_path / "git", tmp_path / "synth"
+    git.mkdir(); synth.mkdir()
+    conv = [{"from": "human", "value": "a"}, {"from": "gpt", "value": "b"}]
+    _write_jsonl(synth / "s.jsonl", [
+        {"instruction": "one shot", "output": _BAD_COUNTS},
+        {"instruction": "live", "output": "b", "conversations": conv, "tools": "[]"},
+    ])
+    _write_jsonl(git / "g.jsonl", [])
+    out = assemble_dataset([git], [synth], tmp_path / "o.jsonl", min_changed_lines=0)
+    assert [r["instruction"] for r in out] == ["live"]
+
+
+def test_length_prefilter_counts_every_turn():
+    conv = [{"from": "human", "value": "a"}, {"from": "observation", "value": "x" * 2000},
+            {"from": "gpt", "value": "b"}]
+    rec = {"instruction": "a", "output": "b", "conversations": conv}
+    assert filter_by_length([rec], max_chars=1000) == []

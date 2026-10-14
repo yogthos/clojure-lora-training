@@ -3,6 +3,7 @@
 import pytest
 
 from src.codeflow.assembly.splitter import (
+    record_groups,
     record_stratum,
     stratified_split,
     assert_no_leakage,
@@ -28,10 +29,10 @@ class TestStratifiedSplit:
         recs = []
         for i in range(80):
             recs.append({"system": TRANSITION_SYSTEM_PROMPTS[0],
-                         "instruction": f"fix bug {i}", "output": "diff", "source": "git"})
+                         "instruction": f"fix bug {i}", "output": f"diff {i}", "source": "git"})
         for i in range(20):
             recs.append({"system": WORKFLOW_SYSTEM_PROMPTS[0],
-                         "instruction": f"build feature {i}", "output": ";; Goal: x",
+                         "instruction": f"build feature {i}", "output": f";; Goal: x{i}",
                          "source": "synthetic"})
         return recs
 
@@ -72,3 +73,38 @@ class TestAssertNoLeakage:
             [{"instruction": "a", "output": "1"}],
             [{"instruction": "b", "output": "2"}],
         )
+
+
+class TestGroupedSplit:
+    def _repo_data(self):
+        recs = []
+        for repo in ("a", "b", "c", "d", "e"):
+            for i in range(20):
+                recs.append({"system": TRANSITION_SYSTEM_PROMPTS[0], "repo": repo,
+                             "instruction": f"fix bug {repo}{i}", "output": f"d{repo}{i}"})
+            for i in range(4):
+                recs.append({"system": WORKFLOW_SYSTEM_PROMPTS[0], "repo": repo,
+                             "instruction": f"build {repo}{i}", "output": f"w{repo}{i}"})
+        return recs
+
+    def test_a_repo_lands_in_one_split(self):
+        train, val = stratified_split(self._repo_data(), val_frac=0.2, seed=3)
+        assert {r["repo"] for r in train}.isdisjoint({r["repo"] for r in val})
+        assert val
+
+    def test_same_input_or_instruction_grouped_without_repo(self):
+        recs = [
+            {"instruction": "Fix the  bug!", "input": "", "output": "1"},
+            {"instruction": "fix the bug", "input": "", "output": "2"},
+            {"instruction": "other", "input": "### src/a.clj\n(ns a)", "output": "3"},
+            {"instruction": "another", "input": "### src/a.clj\n(ns a)", "output": "4"},
+            {"instruction": "lonely", "input": "", "output": "5"},
+        ]
+        g = record_groups(recs)
+        assert g[0] == g[1] and g[2] == g[3]
+        assert len({g[0], g[2], g[4]}) == 3
+
+    def test_leakage_check_covers_groups(self):
+        with pytest.raises(ValueError, match="group"):
+            assert_no_leakage([{"instruction": "a", "output": "1", "repo": "x"}],
+                              [{"instruction": "b", "output": "2", "repo": "x"}])

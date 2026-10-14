@@ -1,19 +1,31 @@
-"""Stratified, leakage-safe train/val split for the codeflow dataset.
+"""Stratified, grouped train/val split for the codeflow dataset.
 
-The final assembled dataset has only ``system``/``instruction``/``input``/
-``output`` (source and change_type are stripped at format time). To split it
-representatively we re-derive each record's stratum — its training objective
-(transition vs workflow, read from which system-prompt pool it belongs to) and
-its change type — and split within each stratum so both halves carry the same
-mix. The dataset is already deduplicated, so a disjoint split is leakage-free;
-``assert_no_leakage`` verifies that invariant defensively.
+Records are split in groups so related examples never straddle the split: all
+records from one repository, records with the same input (the same before-state
+files), records whose instructions match after normalization, and records whose
+code is similar (MinHash Jaccard >= 0.5, e.g. a change carried into a fork). A record-level
+split let near-identical examples sit on both sides and made eval loss look
+better than generalization is.
+
+Within that constraint the split is stratified by each record's training
+objective (transition vs workflow, read from the system-prompt pool) and change
+type, so both halves carry roughly the same mix. ``assert_no_leakage`` checks
+that no record or group appears on both sides.
 """
 
+import hashlib
 import random
-from typing import List, Tuple
+import re
+from collections import Counter
+from typing import Dict, List, Tuple
 
 from ...shared import compute_dedup_key, WORKFLOW_SYSTEM_PROMPTS
 from .assembler import classify_example
+from .near_dup import near_duplicate_clusters, record_text
+
+# Lower than assembly's drop threshold: records this similar aren't
+# duplicates, but one on each side would still flatter the eval loss.
+SPLIT_SIMILARITY = 0.5
 
 _WORKFLOW_PROMPTS = set(WORKFLOW_SYSTEM_PROMPTS)
 
@@ -29,12 +41,51 @@ def record_stratum(record: dict) -> Tuple[str, str]:
     return objective, classify_example(record)
 
 
+def _group_keys(record: dict) -> List[str]:
+    keys = []
+    if record.get("repo"):
+        keys.append("repo:" + record["repo"])
+    if record.get("input", "").strip():
+        keys.append("input:" + hashlib.sha256(record["input"].encode()).hexdigest())
+    instruction = re.sub(r"[^a-z0-9]+", " ", record.get("instruction", "").lower()).strip()
+    if instruction:
+        keys.append("instruction:" + instruction)
+    return keys
+
+
+def record_groups(records: List[dict]) -> List[int]:
+    """Group id per record: connected components over shared repo, identical
+    input, normalized instruction, or similar code."""
+    parent = list(range(len(records)))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    similar = near_duplicate_clusters([record_text(r) for r in records], SPLIT_SIMILARITY)
+    first: Dict[str, int] = {}
+    for i, r in enumerate(records):
+        for key in _group_keys(r) + [f"similar:{similar[i]}"]:
+            if key in first:
+                parent[find(i)] = find(first[key])
+            else:
+                first[key] = i
+    return [find(i) for i in range(len(records))]
+
+
 def assert_no_leakage(train: List[dict], val: List[dict]) -> None:
-    """Raise ValueError if any record appears in both splits (by dedup key)."""
+    """Raise ValueError if a record, or a group of related records, is in both splits."""
     train_keys = {compute_dedup_key(r) for r in train}
     overlap = train_keys & {compute_dedup_key(r) for r in val}
     if overlap:
         raise ValueError(f"train/val leakage: {len(overlap)} shared record(s)")
+    groups = record_groups(train + val)
+    shared = set(groups[:len(train)]) & set(groups[len(train):])
+    if shared:
+        raise ValueError(f"train/val leakage: {len(shared)} group(s) of related records "
+                         "(same repo, input, instruction or similar code) on both sides")
 
 
 def stratified_split(
@@ -42,29 +93,52 @@ def stratified_split(
     val_frac: float = 0.05,
     seed: int = 42,
 ) -> Tuple[List[dict], List[dict]]:
-    """Split records into (train, val), stratified by (objective, change_type).
+    """Split records into (train, val) by whole groups (see ``record_groups``).
 
-    Within each stratum the records are shuffled with ``seed`` and the first
-    ``round(n * val_frac)`` go to validation. Strata too small to yield a
-    validation record fall entirely into train.
+    Groups are shuffled with ``seed`` and each goes to validation while its
+    dominant stratum is under ``round(n * val_frac)`` records there. A stratum
+    that would otherwise get no validation records gets its smallest group, as
+    long as that leaves the stratum something to train on.
     """
     if not records:
         return [], []
 
-    by_stratum: dict = {}
-    for r in records:
-        by_stratum.setdefault(record_stratum(r), []).append(r)
+    by_group: Dict[int, List[dict]] = {}
+    for r, g in zip(records, record_groups(records)):
+        by_group.setdefault(g, []).append(r)
+    groups = [by_group[g] for g in sorted(by_group)]
+
+    strata = Counter(record_stratum(r) for r in records)
+    target = {s: int(round(n * val_frac)) for s, n in strata.items()}
+
+    def dominant(group):
+        return Counter(record_stratum(r) for r in group).most_common(1)[0][0]
 
     rng = random.Random(seed)
-    train: List[dict] = []
-    val: List[dict] = []
-    for stratum in sorted(by_stratum):
-        group = by_stratum[stratum][:]
-        rng.shuffle(group)
-        n_val = int(round(len(group) * val_frac))
-        val.extend(group[:n_val])
-        train.extend(group[n_val:])
+    rng.shuffle(groups)
+    in_val = Counter()
+    val_groups, train_groups = [], []
+    for group in groups:
+        s = dominant(group)
+        if in_val[s] + len(group) <= target[s]:
+            val_groups.append(group)
+            in_val[s] += len(group)
+        else:
+            train_groups.append(group)
 
+    for s in sorted(target):
+        if target[s] == 0 or in_val[s]:
+            continue
+        candidates = [g for g in train_groups if dominant(g) == s]
+        if len(candidates) < 2:
+            continue
+        smallest = min(candidates, key=len)
+        train_groups.remove(smallest)
+        val_groups.append(smallest)
+        in_val[s] += len(smallest)
+
+    train = [r for g in train_groups for r in g]
+    val = [r for g in val_groups for r in g]
     rng.shuffle(train)
     rng.shuffle(val)
     return train, val

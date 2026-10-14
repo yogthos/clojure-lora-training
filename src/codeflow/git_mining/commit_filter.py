@@ -1,7 +1,13 @@
 """Filter commits for Clojure-relevant training data."""
 
+import re
 from dataclasses import dataclass, field
 from typing import List
+
+# Generated merge subjects (git, GitHub, GitLab, Bitbucket: "Merge pull
+# request #12 ...", "Merge branch 'x'", "Merged in ..."). A merge still
+# carrying one has no description of its own (see miner._describe_merges).
+MERGE_SUBJECT = re.compile(r"^Merged?\b")
 
 
 @dataclass
@@ -68,14 +74,15 @@ def filter_clojure_commits(commits: List[CommitInfo]) -> List[CommitInfo]:
     """Filter commits to only those useful for Clojure code LoRA training.
 
     Excludes:
-    - Merge commits
+    - Merge commits with only a generated subject ("Merge pull request #12
+      from ..."); a described merge is one arc of the PR's whole change
     - Non-Clojure commits (no .clj/.cljs/.cljc/.edn files)
     - Trivial messages ("fix", "wip", etc.)
     - Build/config-only changes
     """
     result = []
     for c in commits:
-        if c.is_merge:
+        if c.is_merge and MERGE_SUBJECT.match(c.message):
             continue
         if not _has_clojure_code_files(c.files):
             continue

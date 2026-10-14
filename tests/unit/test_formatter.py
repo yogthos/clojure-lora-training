@@ -65,7 +65,7 @@ class TestFormatRecord:
         rec = {"output": "d", "input": "cc", "instruction": "a", "system": "b"}
         result = format_record(rec)
         keys = list(result.keys())
-        assert keys == ["instruction", "input", "output", "system", "history"]
+        assert keys == ["instruction", "input", "output", "system", "history", "repo"]
 
 
 class TestFormatJSONL:
@@ -110,7 +110,7 @@ class TestFormatJSONLFile:
 
             assert len(formatted) == 2
             for r in formatted:
-                assert set(r.keys()) == {"instruction", "input", "output", "system", "history"}
+                assert set(r.keys()) == {"instruction", "input", "output", "system", "history", "repo"}
                 assert isinstance(r["history"], list)
 
     def test_handles_empty_input_file(self):
@@ -122,3 +122,17 @@ class TestFormatJSONLFile:
 
             count = format_jsonl_file(in_path, out_path)
             assert count == 0
+
+
+def test_repo_is_kept_for_the_grouped_split():
+    from src.codeflow.assembly.formatter import format_record
+    assert format_record({"instruction": "i", "output": "o", "repo": "o__lib"})["repo"] == "o__lib"
+    assert format_record({"instruction": "i", "output": "o"})["repo"] == ""
+
+
+def test_conversations_and_tools_are_kept():
+    from src.codeflow.assembly.formatter import format_record
+    conv = [{"from": "human", "value": "x"}, {"from": "gpt", "value": "y"}]
+    out = format_record({"instruction": "x", "output": "y", "conversations": conv, "tools": "[]"})
+    assert out["conversations"] == conv and out["tools"] == "[]"
+    assert "conversations" not in format_record({"instruction": "x", "output": "y"})

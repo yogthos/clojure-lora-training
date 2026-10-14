@@ -3,7 +3,7 @@
 Adapted from EpiCoder's utils/file_operation.py. Utilities for:
 - Sorting large JSONL files
 - Merging multiple JSONL files
-- Deduplicating by instruction
+- Deduplicating by instruction + output
 - Shuffling with memory efficiency
 """
 
@@ -13,6 +13,7 @@ import random
 from pathlib import Path
 from typing import List, Optional, Set, Tuple
 
+from ...shared import compute_dedup_key
 from ...shared import count_records  # noqa: F401 — re-exported for backward compat
 from ...shared import load_jsonl as read_jsonl
 from ...shared import write_jsonl
@@ -51,7 +52,7 @@ def merge_jsonl(
     input_paths: List[str],
     output_path: str,
     deduplicate: bool = True,
-    dedup_key: str = "instruction",
+    dedup_key: Optional[str] = None,
 ) -> str:
     """Merge multiple JSONL files into one.
 
@@ -59,7 +60,8 @@ def merge_jsonl(
         input_paths: List of JSONL file paths to merge.
         output_path: Output file path.
         deduplicate: Whether to remove duplicates.
-        dedup_key: Key to use for deduplication.
+        dedup_key: Key to use for deduplication (default: instruction +
+            output, see _record_signature).
 
     Returns:
         Path to merged output.
@@ -120,14 +122,15 @@ def shuffle_jsonl(
 def deduplicate_jsonl(
     input_path: str,
     output_path: Optional[str] = None,
-    dedup_key: str = "instruction",
+    dedup_key: Optional[str] = None,
 ) -> str:
     """Remove duplicate records from a JSONL file.
 
     Args:
         input_path: Path to input JSONL.
         output_path: Output path.
-        dedup_key: Key to check for duplicates.
+        dedup_key: Key to check for duplicates (default: instruction +
+            output, see _record_signature).
 
     Returns:
         Path to deduplicated output.
@@ -195,11 +198,15 @@ def split_jsonl(
     return train_path, val_path
 
 
-def _record_signature(record: dict, key: str = "instruction") -> str:
+def _record_signature(record: dict, key: Optional[str] = None) -> str:
     """Generate a deduplication signature for a record.
 
-    Uses the dedup key value normalized and hashed.
+    By default hashes instruction + output (shared.compute_dedup_key):
+    keying on the instruction alone collapsed different solutions to the same
+    task. With an explicit key, uses that value normalized and hashed.
     """
+    if key is None:
+        return compute_dedup_key(record)
     value = record.get(key, "")
     if isinstance(value, (list, dict)):
         value = json.dumps(value, sort_keys=True)

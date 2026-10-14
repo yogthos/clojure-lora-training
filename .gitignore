@@ -44,7 +44,6 @@ wheels/
 .DS_Store
 Thumbs.db
 .clj-kondo/
-.gitattributes
 .lsp/
 checkpoints/
 config.json

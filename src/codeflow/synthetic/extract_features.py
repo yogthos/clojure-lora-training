@@ -6,14 +6,15 @@ protocols, multimethods, concurrency primitives, transducers, specs,
 JVM interop patterns, and REPL-driven development patterns.
 """
 
-import json
-import re
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from ...llm.provider import LLMProvider
+from ...llm.provider import LLMAuthError, LLMError, LLMProvider
+from .llm_json import parse_json_list
 
+logger = logging.getLogger(__name__)
 
 from .prompts import EXTRACT_SYSTEM as _EXTRACT_SYSTEM_PROMPT
 
@@ -74,7 +75,7 @@ def _read_file_safe(path: Path, max_lines: int = 300) -> Optional[str]:
             tail = "\n".join(lines[-max_lines + 50:])
             return f"{head}\n\n;; ... {len(lines) - max_lines} lines omitted ...\n\n{tail}"
         return content
-    except Exception:
+    except (OSError, ValueError):  # unreadable, or not UTF-8
         return None
 
 
@@ -131,15 +132,18 @@ def extract_features_from_files(
                 temperature=0.1,
                 max_tokens=4096,
                 require_json=True,
+                # A reply cut off at max_tokens is broken JSON: drop the batch.
+                reject_truncated=True,
             )
-            features = _parse_features(result, root)
-            all_features.extend(features)
-        except Exception as e:
+        except LLMAuthError:
+            raise
+        except LLMError as e:
             # Log and continue — don't lose all progress for one batch failure
-            import logging
-            logging.getLogger(__name__).warning(
+            logger.warning(
                 f"Feature extraction batch failed (files {i}-{i + batch_size}): {e}"
             )
+            continue
+        all_features.extend(_parse_features(result, root))
 
     return all_features
 
@@ -165,39 +169,17 @@ def _build_batch_prompt(files: List[Path], root: Path) -> str:
     )
 
 
-def _parse_features(result: str, root: Path) -> List[ClojureFeature]:
-    """Parse LLM JSON response into ClojureFeature list."""
-    if isinstance(result, dict):
-        items = result.get("features", result.get("data", [result]))
-        if isinstance(items, dict):
-            items = [items]
-    elif isinstance(result, str):
-        try:
-            items = json.loads(result)
-            if isinstance(items, dict):
-                items = [items]
-        except json.JSONDecodeError:
-            # Try extracting from markdown code block
-            match = re.search(r'```(?:json)?\s*\n?(.*?)```', result, re.DOTALL)
-            if match:
-                try:
-                    items = json.loads(match.group(1))
-                except json.JSONDecodeError:
-                    return []
-            else:
-                return []
-    else:
+def _parse_features(result, root: Path) -> List[ClojureFeature]:
+    """Parse the LLM's {"features": [...]} reply into ClojureFeature list.
+
+    Unparseable replies and nameless items are dropped.
+    """
+    try:
+        items = parse_json_list(result, "features")
+    except ValueError:
         return []
-
-    if not isinstance(items, list):
-        return []
-
-    features = []
-    for item in items:
-        feat = ClojureFeature.from_dict(item)
-        features.append(feat)
-
-    return features
+    features = [ClojureFeature.from_dict(item) for item in items]
+    return [f for f in features if f.name]
 
 
 def extract_features_from_repo(

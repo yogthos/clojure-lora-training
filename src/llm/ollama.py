@@ -11,6 +11,7 @@ from .provider import (
     LLMError,
     LLMTimeoutError,
     LLMResponseError,
+    LLMUnavailableError,
     register_provider
 )
 
@@ -35,7 +36,8 @@ class OllamaProvider(LLMProvider):
             if response.status_code != 200:
                 logger.warning(f"Ollama may not be running at {self.base_url}")
         except requests.exceptions.ConnectionError:
-            logger.warning(f"Cannot connect to Ollama at {self.base_url}")
+            raise LLMUnavailableError(f"Cannot connect to Ollama at {self.base_url}. Is Ollama "
+                                      "running? (LLM_PROVIDER=deepseek selects DeepSeek)")
 
     @property
     def provider_name(self) -> str:

@@ -47,6 +47,12 @@ class TestCommitFilter:
         assert len(result) == 1
         assert result[0].hash == "abc123"
 
+    def test_keeps_described_merges(self):
+        # The miner replaces a merge's generated subject with the PR title.
+        merged = CommitInfo(hash="m", message="Retry failed fetches three times",
+                            files=["src/core.clj"], is_merge=True)
+        assert filter_clojure_commits([merged]) == [merged]
+
     def test_excludes_merge_commits(self):
         commits = [
             self._make_commit(files=["src/core.clj"]),

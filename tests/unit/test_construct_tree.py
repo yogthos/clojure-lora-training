@@ -131,3 +131,86 @@ class TestTreeStatistics:
         tree = assign_features_to_tree(features, tree)
         stats = get_tree_statistics(tree)
         assert stats["total_features"] == 3
+
+
+def _where(tree, feat_name):
+    return [n for n, node in tree.nodes.items()
+            if any(f.get("name") == feat_name for f in node.features)]
+
+
+class TestUntypedFeatureRouting:
+    """An empty feature_type used to match the first routing key via
+    '"" in key', sending every untyped feature to metaprogramming/macros."""
+
+    def test_untyped_feature_not_sent_to_macros(self):
+        tree = assign_features_to_tree(
+            [{"feature_type": "", "name": "weird", "description": "something"}])
+        assert _where(tree, "weird") != ["metaprogramming/macros"]
+        assert len(_where(tree, "weird")) == 1
+
+    def test_missing_type_routed_by_description(self):
+        tree = assign_features_to_tree(
+            [{"name": "go-loop", "description": "core-async event loop over channels"}])
+        assert _where(tree, "go-loop")[0].startswith("concurrency/")
+
+    def test_untyped_feature_uses_name_for_subcategory(self):
+        tree = assign_features_to_tree(
+            [{"feature_type": "", "name": "deftest", "description": "unit-tests for parser"}])
+        assert _where(tree, "deftest") == ["testing/unit-tests"]
+
+    def test_hyphenated_type_matches_its_subcategory(self):
+        # Labels are title-cased with spaces ("Atoms Refs"); the slug type
+        # "atoms-refs" must still pick that node, not the first child.
+        tree = assign_features_to_tree(
+            [{"feature_type": "futures-promises", "name": "p", "description": "x"}])
+        assert _where(tree, "p") == ["concurrency/futures-promises"]
+
+
+class _JsonLLM:
+    def __init__(self, payload=None, exc=None):
+        self.payload, self.exc, self.kwargs = payload, exc, {}
+
+    def call(self, system_prompt, user_prompt, **kw):
+        self.kwargs = dict(kw, system=system_prompt)
+        if self.exc:
+            raise self.exc
+        return json.dumps(self.payload)
+
+
+class TestBuildTreeWithLLM:
+    _FEATS = [
+        {"feature_type": "", "name": "go-loop", "description": "event loop"},
+        {"feature_type": "macros", "name": "defmacro", "description": "macro"},
+    ]
+
+    def test_object_reply_classifies(self):
+        from src.codeflow.synthetic.construct_tree import build_tree_with_llm
+        llm = _JsonLLM({"classifications": [
+            {"feature_index": 0, "category": "concurrency", "subcategory_hint": "core-async"},
+            {"feature_index": 1, "category": "metaprogramming"},
+        ]})
+        tree = build_tree_with_llm(self._FEATS, llm)
+        assert _where(tree, "go-loop")[0].startswith("concurrency/")
+        assert _where(tree, "defmacro")[0].startswith("metaprogramming/")
+        assert '"classifications"' in llm.kwargs["system"]
+        assert llm.kwargs["reject_truncated"] is True
+
+    def test_unclassified_features_are_kept(self):
+        from src.codeflow.synthetic.construct_tree import build_tree_with_llm
+        llm = _JsonLLM({"classifications": [
+            {"feature_index": 0, "category": "concurrency"},
+        ]})
+        tree = build_tree_with_llm(self._FEATS, llm)
+        assert len(_where(tree, "defmacro")) == 1
+
+    def test_llm_error_falls_back_to_keyword_routing(self):
+        from src.codeflow.synthetic.construct_tree import build_tree_with_llm
+        from src.llm.provider import LLMError
+        tree = build_tree_with_llm(self._FEATS, _JsonLLM(exc=LLMError("503")))
+        assert _where(tree, "defmacro") == ["metaprogramming/macros"]
+
+    def test_auth_error_propagates(self):
+        from src.codeflow.synthetic.construct_tree import build_tree_with_llm
+        from src.llm.provider import LLMAuthError
+        with pytest.raises(LLMAuthError):
+            build_tree_with_llm(self._FEATS, _JsonLLM(exc=LLMAuthError("401")))
